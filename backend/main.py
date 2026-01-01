@@ -1,7 +1,10 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from pydantic import BaseModel
 
 from services.whisper_service import transcribe
+from services.tts_service import synthesize
 
 app = FastAPI()
 
@@ -38,6 +41,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")
+
+class TTSRequest(BaseModel):
+    text: str
+
+@app.post("/tts")
+async def text_to_speech(request: TTSRequest):
+    try:
+        audio_bytes = synthesize(request.text)
+        return Response(content=audio_bytes, media_type="audio/wav")
+    except Exception as e:
+        print(f"TTS error: {e}")
+        return Response(content=str(e), status_code=500)
 
 @app.get("/health")
 async def health():

@@ -215,13 +215,33 @@ export function useVoiceChat() {
         const ignoredCommands = ["stop", "okay", "ok", "got it"]
         const saveChatCommands = ["save chat", "safe chat"]
 
+        // Helper to update last pending message
+        const updatePendingMessage = (text: string | null) => {
+          setMessages((prev) => {
+            // Find last user message with "..."
+            const lastPendingIndex = prev.findLastIndex(
+              (msg) => msg.role === "user" && msg.text === "..."
+            )
+            if (lastPendingIndex === -1) return prev
+
+            if (text === null) {
+              // Remove the pending message
+              return prev.filter((_, i) => i !== lastPendingIndex)
+            }
+            // Update with actual text
+            return prev.map((msg, i) =>
+              i === lastPendingIndex ? { ...msg, text } : msg
+            )
+          })
+        }
+
         // Handle save chat commands
         if (saveChatCommands.includes(normalized)) {
           stopThinkingBeat()
           saveChat()
+          updatePendingMessage("Save chat")
           setMessages((prev) => [
             ...prev,
-            { id: crypto.randomUUID(), role: "user", text: "Save chat" },
             { id: crypto.randomUUID(), role: "assistant", text: "Chat saved." },
           ])
           setStatus("listening")
@@ -233,15 +253,14 @@ export function useVoiceChat() {
         if (ignoredCommands.includes(normalized)) {
           console.log(`Ignored command: "${data.text}"`)
           stopThinkingBeat()
+          updatePendingMessage(null)
           setStatus("listening")
           skipNextResponseRef.current = true
           return
         }
 
-        setMessages((prev) => [
-          ...prev,
-          { id: crypto.randomUUID(), role: "user", text: data.text },
-        ])
+        // Update pending message with actual transcription
+        updatePendingMessage(data.text)
       } else if (data.type === "response") {
         // Skip response if previous command was filtered
         if (skipNextResponseRef.current) {
@@ -298,6 +317,12 @@ export function useVoiceChat() {
             console.log("WebSocket not ready")
             return
           }
+
+          // Add pending user message immediately
+          setMessages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: "user", text: "..." },
+          ])
 
           setStatus("processing")
           startThinkingBeat()

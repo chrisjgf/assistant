@@ -1,8 +1,10 @@
-import { useState, useRef } from "react"
 import type { Message } from "../hooks/useVoiceChat"
 
 interface ChatViewProps {
   messages: Message[]
+  speakingId: string | null
+  onSpeak: (text: string, messageId: string) => void
+  onStopSpeak: () => void
 }
 
 function SpeakerIcon({ speaking }: { speaking: boolean }) {
@@ -19,86 +21,12 @@ function SpeakerIcon({ speaking }: { speaking: boolean }) {
   )
 }
 
-const API_URL = "http://localhost:8000"
-
-export function ChatView({ messages }: ChatViewProps) {
-  const [speakingId, setSpeakingId] = useState<string | null>(null)
-  const [loading, setLoading] = useState<string | null>(null)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-
-  const useBrowserTTS = (message: Message) => {
-    setLoading(null)
-    window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(message.text)
-    utterance.onstart = () => setSpeakingId(message.id)
-    utterance.onend = () => setSpeakingId(null)
-    utterance.onerror = () => setSpeakingId(null)
-    window.speechSynthesis.speak(utterance)
-  }
-
-  const handleSpeak = async (message: Message) => {
-    // Stop if already speaking this message
+export function ChatView({ messages, speakingId, onSpeak, onStopSpeak }: ChatViewProps) {
+  const handleSpeak = (message: Message) => {
     if (speakingId === message.id) {
-      audioRef.current?.pause()
-      audioRef.current = null
-      window.speechSynthesis.cancel()
-      setSpeakingId(null)
-      return
-    }
-
-    // Stop any current audio
-    audioRef.current?.pause()
-    window.speechSynthesis.cancel()
-
-    setLoading(message.id)
-
-    try {
-      const response = await fetch(`${API_URL}/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: message.text }),
-      })
-
-      if (!response.ok) {
-        // Fallback to browser TTS
-        console.warn("Backend TTS failed, using browser TTS")
-        useBrowserTTS(message)
-        return
-      }
-
-      const audioBlob = await response.blob()
-      console.log("Audio blob:", audioBlob.size, "bytes, type:", audioBlob.type)
-
-      const audioUrl = URL.createObjectURL(audioBlob)
-      const audio = new Audio(audioUrl)
-      audioRef.current = audio
-
-      audio.onplay = () => {
-        console.log("Audio playing")
-        setLoading(null)
-        setSpeakingId(message.id)
-      }
-      audio.onended = () => {
-        console.log("Audio ended")
-        setSpeakingId(null)
-        URL.revokeObjectURL(audioUrl)
-      }
-      audio.onerror = (e) => {
-        console.error("Audio error:", e)
-        setLoading(null)
-        setSpeakingId(null)
-      }
-
-      try {
-        await audio.play()
-        console.log("Audio play() succeeded")
-      } catch (playError) {
-        console.error("Audio play() failed:", playError)
-        useBrowserTTS(message)
-      }
-    } catch (err) {
-      console.warn("TTS fetch failed, using browser TTS:", err)
-      useBrowserTTS(message)
+      onStopSpeak()
+    } else {
+      onSpeak(message.text, message.id)
     }
   }
 
@@ -127,19 +55,14 @@ export function ChatView({ messages }: ChatViewProps) {
             <p className="text-sm whitespace-pre-wrap flex-1">{message.text}</p>
             <button
               onClick={() => handleSpeak(message)}
-              disabled={loading === message.id}
               className={`flex-shrink-0 p-1 rounded hover:bg-black/10 transition-colors ${
-                speakingId === message.id || loading === message.id
+                speakingId === message.id
                   ? "opacity-100"
                   : "opacity-60 hover:opacity-100"
               }`}
               title={speakingId === message.id ? "Stop" : "Speak"}
             >
-              {loading === message.id ? (
-                <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <SpeakerIcon speaking={speakingId === message.id} />
-              )}
+              <SpeakerIcon speaking={speakingId === message.id} />
             </button>
           </div>
         </div>

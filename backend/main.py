@@ -1,3 +1,7 @@
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -5,6 +9,7 @@ from pydantic import BaseModel
 
 from services.whisper_service import transcribe
 from services.tts_service import synthesize
+from services.ai import get_ai_provider
 
 app = FastAPI()
 
@@ -37,6 +42,17 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({
                 "type": "transcription",
                 "text": user_text
+            })
+
+            # Get AI response
+            ai = get_ai_provider()
+            ai_response = ai.get_response(user_text)
+            print(f"AI response: {ai_response}")
+
+            # Send AI response to client
+            await websocket.send_json({
+                "type": "response",
+                "text": ai_response
             })
 
     except WebSocketDisconnect:

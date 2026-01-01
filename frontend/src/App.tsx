@@ -3,7 +3,7 @@ import { ChatView } from "./components/ChatView"
 import { StatusIndicator } from "./components/StatusIndicator"
 
 function App() {
-  const { status, messages, error, isLoading, start, stop } = useVoiceChat()
+  const { status, messages, error, isLoading, start, stop, speakingId, playTTS, stopAudio } = useVoiceChat()
 
   const isActive = status !== "idle"
 
@@ -14,7 +14,12 @@ function App() {
         <StatusIndicator status={status} />
       </header>
 
-      <ChatView messages={messages} />
+      <ChatView
+        messages={messages}
+        speakingId={speakingId}
+        onSpeak={playTTS}
+        onStopSpeak={stopAudio}
+      />
 
       <footer className="bg-white border-t border-gray-200 p-4">
         {error && (

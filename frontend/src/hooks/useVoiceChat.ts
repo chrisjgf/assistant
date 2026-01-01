@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 
-export type Status = "idle" | "listening" | "processing"
+export type Status = "idle" | "listening" | "processing" | "speaking"
 
 export interface Message {
   id: string
@@ -27,15 +27,71 @@ declare global {
 }
 
 const WS_URL = "ws://localhost:8000/ws"
+const API_URL = "http://localhost:8000"
 
 export function useVoiceChat() {
   const [status, setStatus] = useState<Status>("idle")
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const [speakingId, setSpeakingId] = useState<string | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const vadRef = useRef<Awaited<ReturnType<typeof window.vad.MicVAD.new>> | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    window.speechSynthesis.cancel()
+    setSpeakingId(null)
+  }, [])
+
+  const playTTS = useCallback(async (text: string, messageId: string) => {
+    stopAudio()
+    setStatus("speaking")
+    setSpeakingId(messageId)
+
+    try {
+      const response = await fetch(`${API_URL}/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      })
+
+      if (!response.ok) {
+        throw new Error("TTS request failed")
+      }
+
+      const audioBlob = await response.blob()
+      const audioUrl = URL.createObjectURL(audioBlob)
+      const audio = new Audio(audioUrl)
+      audioRef.current = audio
+
+      audio.onended = () => {
+        setSpeakingId(null)
+        setStatus("listening")
+        URL.revokeObjectURL(audioUrl)
+      }
+
+      audio.onerror = () => {
+        setSpeakingId(null)
+        setStatus("listening")
+      }
+
+      await audio.play()
+    } catch (err) {
+      console.warn("TTS failed, using browser TTS:", err)
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.onend = () => {
+        setSpeakingId(null)
+        setStatus("listening")
+      }
+      window.speechSynthesis.speak(utterance)
+    }
+  }, [stopAudio])
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
@@ -55,7 +111,13 @@ export function useVoiceChat() {
           ...prev,
           { id: crypto.randomUUID(), role: "user", text: data.text },
         ])
-        setStatus("listening")
+      } else if (data.type === "response") {
+        const messageId = crypto.randomUUID()
+        setMessages((prev) => [
+          ...prev,
+          { id: messageId, role: "assistant", text: data.text },
+        ])
+        playTTS(data.text, messageId)
       }
     }
 
@@ -70,7 +132,7 @@ export function useVoiceChat() {
     }
 
     wsRef.current = ws
-  }, [])
+  }, [playTTS])
 
   const start = useCallback(async () => {
     if (!window.vad) {
@@ -87,6 +149,7 @@ export function useVoiceChat() {
       const myvad = await window.vad.MicVAD.new({
         onSpeechStart: () => {
           console.log("Speech started")
+          stopAudio()
         },
         onSpeechEnd: (audio) => {
           console.log("Speech ended, sending audio...")
@@ -137,8 +200,12 @@ export function useVoiceChat() {
     error,
     isLoading,
     isListening: status === "listening",
+    isSpeaking: status === "speaking",
+    speakingId,
     start,
     stop,
+    stopAudio,
+    playTTS,
   }
 }
 

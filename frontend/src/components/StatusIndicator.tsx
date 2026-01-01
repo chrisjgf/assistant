@@ -20,6 +20,11 @@ const statusConfig = {
     color: "bg-yellow-500",
     pulse: true,
   },
+  speaking: {
+    label: "Speaking",
+    color: "bg-blue-500",
+    pulse: true,
+  },
 }
 
 export function StatusIndicator({ status }: StatusIndicatorProps) {

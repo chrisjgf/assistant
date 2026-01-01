@@ -1,86 +1,108 @@
 import io
 import wave
-import urllib.request
 from pathlib import Path
+from typing import Optional
 
-voice = None
-piper_available = False
-MODEL_DIR = Path(__file__).parent.parent / "models"
-MODEL_NAME = "en_US-hfc_female-medium"
+import numpy as np
+import torch
+
+_model = None
+_chatterbox_available = False
+
+# Reference voice for cloning
+SAMPLE_DIR = Path(__file__).parent.parent / "sample"
+REFERENCE_VOICE = SAMPLE_DIR / "reference_voice.wav"
 
 try:
-    from piper import PiperVoice
-    piper_available = True
+    from chatterbox.tts import ChatterboxTTS
+    _chatterbox_available = True
 except ImportError:
-    print("Warning: piper-tts not installed. TTS will not be available.")
-    print("Install with: pip install piper-tts")
+    print("Warning: chatterbox-tts not installed. TTS will not be available.")
+    print("Install with: pip install chatterbox-tts torchaudio")
 
-def download_model():
-    """Download the Piper voice model if not present."""
-    MODEL_DIR.mkdir(exist_ok=True)
+def _get_device() -> str:
+    """Determine the best available device for inference."""
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
 
-    model_path = MODEL_DIR / f"{MODEL_NAME}.onnx"
-    config_path = MODEL_DIR / f"{MODEL_NAME}.onnx.json"
 
-    if model_path.exists() and config_path.exists():
-        return str(model_path)
+def get_model() -> Optional["ChatterboxTTS"]:
+    """Lazy-load the Chatterbox TTS model."""
+    global _model
 
-    base_url = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/"
-
-    print(f"Downloading Piper voice model to {MODEL_DIR}...")
-
-    if not model_path.exists():
-        print(f"  Downloading {MODEL_NAME}.onnx...")
-        urllib.request.urlretrieve(f"{base_url}{MODEL_NAME}.onnx", model_path)
-
-    if not config_path.exists():
-        print(f"  Downloading {MODEL_NAME}.onnx.json...")
-        urllib.request.urlretrieve(f"{base_url}{MODEL_NAME}.onnx.json", config_path)
-
-    print("Download complete!")
-    return str(model_path)
-
-def get_voice():
-    global voice
-    if not piper_available:
+    if not _chatterbox_available:
         return None
-    if voice is None:
-        model_path = download_model()
-        voice = PiperVoice.load(model_path)
-    return voice
+
+    if _model is None:
+        device = _get_device()
+        print(f"Loading Chatterbox TTS on {device}...")
+        try:
+            _model = ChatterboxTTS.from_pretrained(device=device)
+        except RuntimeError as e:
+            if "CUDA" in str(e) or "out of memory" in str(e):
+                print(f"CUDA error: {e}. Falling back to CPU...")
+                _model = ChatterboxTTS.from_pretrained(device="cpu")
+            else:
+                raise
+        print("Chatterbox TTS loaded successfully")
+
+    return _model
+
 
 def synthesize(text: str) -> bytes:
-    """Synthesize text to audio bytes using Piper TTS."""
-    piper = get_voice()
+    """Synthesize text to audio bytes using Chatterbox TTS."""
+    if not text or not text.strip():
+        raise ValueError("Cannot synthesize empty text")
 
-    if piper is None:
-        raise RuntimeError("Piper TTS not available. Install with: pip install piper-tts")
+    model = get_model()
 
-    # Collect all audio chunks
-    audio_data = []
-    sample_rate = None
+    if model is None:
+        raise RuntimeError(
+            "Chatterbox TTS not available. "
+            "Install with: pip install chatterbox-tts torchaudio"
+        )
 
-    for chunk in piper.synthesize(text):
-        audio_data.append(chunk.audio_int16_bytes)
-        if sample_rate is None:
-            sample_rate = chunk.sample_rate
+    # Generate audio with voice cloning
+    if REFERENCE_VOICE.exists():
+        print(f"Using reference voice: {REFERENCE_VOICE}")
+        wav_tensor = model.generate(text, audio_prompt_path=str(REFERENCE_VOICE))
+    else:
+        print("No reference voice found, using default")
+        wav_tensor = model.generate(text)
 
-    if not audio_data:
-        raise RuntimeError("Piper produced no audio output")
+    # Convert tensor to numpy
+    if wav_tensor.dim() == 1:
+        wav_tensor = wav_tensor.unsqueeze(0)
 
-    all_audio = b''.join(audio_data)
-    print(f"Synthesized {len(all_audio)} bytes of audio at {sample_rate}Hz")
+    audio_np = wav_tensor.cpu().numpy().squeeze()
 
-    # Create WAV file
+    # Normalize to [-1, 1] range if needed
+    max_val = max(abs(audio_np.max()), abs(audio_np.min()))
+    if max_val > 1.0:
+        audio_np = audio_np / max_val
+
+    # Convert to 16-bit PCM
+    audio_int16 = (audio_np * 32767).astype(np.int16)
+
+    # Get sample rate from model
+    sample_rate = model.sr
+
+    # Create WAV file in memory
     audio_buffer = io.BytesIO()
     with wave.open(audio_buffer, "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)  # 16-bit
-        wav_file.setframerate(sample_rate or 22050)
-        wav_file.writeframes(all_audio)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_int16.tobytes())
 
     audio_buffer.seek(0)
-    return audio_buffer.read()
+    wav_bytes = audio_buffer.read()
+
+    print(f"Synthesized {len(wav_bytes)} bytes at {sample_rate}Hz")
+    return wav_bytes
+
 
 def is_available() -> bool:
-    return piper_available
+    """Check if TTS is available."""
+    return _chatterbox_available

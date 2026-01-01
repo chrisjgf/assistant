@@ -26,8 +26,10 @@ declare global {
   }
 }
 
-const WS_URL = "ws://localhost:8000/ws"
-const API_URL = "http://localhost:8000"
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const httpProtocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+const WS_URL = `${wsProtocol}//${window.location.hostname}:8000/ws`
+const API_URL = `${httpProtocol}//${window.location.hostname}:8000`
 
 export function useVoiceChat() {
   const [status, setStatus] = useState<Status>("idle")
@@ -39,18 +41,84 @@ export function useVoiceChat() {
   const wsRef = useRef<WebSocket | null>(null)
   const vadRef = useRef<Awaited<ReturnType<typeof window.vad.MicVAD.new>> | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const thinkingAudioRef = useRef<{ stop: () => void; pitchUp: () => void } | null>(null)
+  const ttsRequestIdRef = useRef(0)
+  const skipNextResponseRef = useRef(false)
+
+  // Create a soft rhythmic thinking beat using Web Audio API
+  const startThinkingBeat = useCallback(() => {
+    if (thinkingAudioRef.current) return
+
+    const audioContext = new AudioContext()
+    const gainNode = audioContext.createGain()
+    gainNode.gain.value = 0.15 // Soft volume
+    gainNode.connect(audioContext.destination)
+
+    let isPlaying = true
+    let frequency = 220 // A3 note - soft tone (initial pitch)
+
+    const playBeat = () => {
+      if (!isPlaying) return
+
+      const oscillator = audioContext.createOscillator()
+      const beatGain = audioContext.createGain()
+
+      oscillator.type = "sine"
+      oscillator.frequency.value = frequency
+
+      beatGain.gain.setValueAtTime(0.3, audioContext.currentTime)
+      beatGain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15)
+
+      oscillator.connect(beatGain)
+      beatGain.connect(gainNode)
+
+      oscillator.start(audioContext.currentTime)
+      oscillator.stop(audioContext.currentTime + 0.15)
+
+      // Schedule next beat (600ms interval for gentle rhythm)
+      setTimeout(playBeat, 600)
+    }
+
+    playBeat()
+
+    thinkingAudioRef.current = {
+      stop: () => {
+        isPlaying = false
+        audioContext.close()
+        thinkingAudioRef.current = null
+      },
+      pitchUp: () => {
+        frequency = 330 // E4 note - higher pitch for "generating voice"
+      }
+    }
+  }, [])
+
+  const stopThinkingBeat = useCallback(() => {
+    thinkingAudioRef.current?.stop()
+  }, [])
 
   const stopAudio = useCallback(() => {
+    stopThinkingBeat()
+    ttsRequestIdRef.current++ // Cancel any pending TTS
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current = null
     }
     window.speechSynthesis.cancel()
     setSpeakingId(null)
-  }, [])
+  }, [stopThinkingBeat])
 
   const playTTS = useCallback(async (text: string, messageId: string) => {
-    stopAudio()
+    // Cancel any previous TTS but keep thinking beat running
+    ttsRequestIdRef.current++
+    const thisRequestId = ttsRequestIdRef.current
+
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    window.speechSynthesis.cancel()
+
     setStatus("speaking")
     setSpeakingId(messageId)
 
@@ -61,11 +129,24 @@ export function useVoiceChat() {
         body: JSON.stringify({ text }),
       })
 
+      // Check if this request is still the latest
+      if (thisRequestId !== ttsRequestIdRef.current) {
+        console.log("TTS request cancelled - newer request pending")
+        return
+      }
+
       if (!response.ok) {
         throw new Error("TTS request failed")
       }
 
       const audioBlob = await response.blob()
+
+      // Check again after blob download
+      if (thisRequestId !== ttsRequestIdRef.current) {
+        console.log("TTS request cancelled - newer request pending")
+        return
+      }
+
       const audioUrl = URL.createObjectURL(audioBlob)
       const audio = new Audio(audioUrl)
       audioRef.current = audio
@@ -81,9 +162,12 @@ export function useVoiceChat() {
         setStatus("listening")
       }
 
+      // Stop thinking beat just before audio plays
+      stopThinkingBeat()
       await audio.play()
     } catch (err) {
       console.warn("TTS failed, using browser TTS:", err)
+      stopThinkingBeat()
       const utterance = new SpeechSynthesisUtterance(text)
       utterance.onend = () => {
         setSpeakingId(null)
@@ -91,7 +175,24 @@ export function useVoiceChat() {
       }
       window.speechSynthesis.speak(utterance)
     }
-  }, [stopAudio])
+  }, [stopThinkingBeat])
+
+  const saveChat = useCallback(() => {
+    const chatData = {
+      timestamp: new Date().toISOString(),
+      messages: messages,
+    }
+    const blob = new Blob([JSON.stringify(chatData, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `chat-${new Date().toISOString().slice(0, 19).replace(/[:-]/g, "")}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    console.log("Chat saved")
+  }, [messages])
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
@@ -107,11 +208,51 @@ export function useVoiceChat() {
       const data = JSON.parse(event.data)
 
       if (data.type === "transcription") {
+        // Normalize text - remove punctuation for comparison
+        const normalized = data.text.toLowerCase().trim().replace(/[.!?,]/g, "")
+
+        // Commands to handle locally (isolated phrases only)
+        const ignoredCommands = ["stop", "okay", "ok", "got it"]
+        const saveChatCommands = ["save chat", "safe chat"]
+
+        // Handle save chat commands
+        if (saveChatCommands.includes(normalized)) {
+          stopThinkingBeat()
+          saveChat()
+          setMessages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: "user", text: "Save chat" },
+            { id: crypto.randomUUID(), role: "assistant", text: "Chat saved." },
+          ])
+          setStatus("listening")
+          skipNextResponseRef.current = true
+          return
+        }
+
+        // Ignore these isolated commands entirely
+        if (ignoredCommands.includes(normalized)) {
+          console.log(`Ignored command: "${data.text}"`)
+          stopThinkingBeat()
+          setStatus("listening")
+          skipNextResponseRef.current = true
+          return
+        }
+
         setMessages((prev) => [
           ...prev,
           { id: crypto.randomUUID(), role: "user", text: data.text },
         ])
       } else if (data.type === "response") {
+        // Skip response if previous command was filtered
+        if (skipNextResponseRef.current) {
+          skipNextResponseRef.current = false
+          console.log("Skipped AI response for filtered command")
+          return
+        }
+
+        // Pitch up the beat - AI responded, now generating voice
+        thinkingAudioRef.current?.pitchUp()
+
         const messageId = crypto.randomUUID()
         setMessages((prev) => [
           ...prev,
@@ -132,7 +273,7 @@ export function useVoiceChat() {
     }
 
     wsRef.current = ws
-  }, [playTTS])
+  }, [playTTS, saveChat, stopThinkingBeat])
 
   const start = useCallback(async () => {
     if (!window.vad) {
@@ -159,6 +300,7 @@ export function useVoiceChat() {
           }
 
           setStatus("processing")
+          startThinkingBeat()
           const wavBuffer = encodeWAV(audio, 16000)
           wsRef.current.send(wavBuffer)
         },
@@ -176,19 +318,21 @@ export function useVoiceChat() {
       setError(`VAD error: ${err instanceof Error ? err.message : String(err)}`)
       setIsLoading(false)
     }
-  }, [connectWebSocket])
+  }, [connectWebSocket, startThinkingBeat, stopAudio])
 
   const stop = useCallback(() => {
     console.log("Stopping voice chat...")
+    stopThinkingBeat()
     vadRef.current?.pause()
     vadRef.current?.destroy()
     vadRef.current = null
     wsRef.current?.close()
     setStatus("idle")
-  }, [])
+  }, [stopThinkingBeat])
 
   useEffect(() => {
     return () => {
+      thinkingAudioRef.current?.stop()
       wsRef.current?.close()
       vadRef.current?.destroy()
     }
@@ -206,6 +350,7 @@ export function useVoiceChat() {
     stop,
     stopAudio,
     playTTS,
+    saveChat,
   }
 }
 

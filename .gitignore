@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 models/
+venv/
+certs/
+backend/sample/

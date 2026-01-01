@@ -1,6 +1,14 @@
+import os
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Load env before setting CUDA device
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+# Set CUDA device if specified (must be before torch import)
+cuda_device = os.getenv("CUDA_DEVICE")
+if cuda_device:
+    os.environ["CUDA_VISIBLE_DEVICES"] = cuda_device
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,10 +16,18 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from services.whisper_service import transcribe
-from services.tts_service import synthesize
+from services.tts_service import synthesize, get_model as get_tts_model, is_available as tts_available
 from services.ai import get_ai_provider
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Preload models at startup to avoid first-request latency."""
+    if tts_available():
+        print("Preloading TTS model...")
+        get_tts_model()
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,4 +92,11 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    cert_dir = Path(__file__).parent.parent / "certs"
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        ssl_keyfile=str(cert_dir / "key.pem"),
+        ssl_certfile=str(cert_dir / "cert.pem"),
+    )

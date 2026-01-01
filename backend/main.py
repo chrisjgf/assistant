@@ -22,8 +22,8 @@ from fastapi.responses import StreamingResponse
 
 from services.whisper_service import transcribe, get_model as get_whisper_model
 from services.tts_service import synthesize, get_model as get_tts_model, is_available as tts_available, split_into_sentences
-from services.ai import get_ai_provider
-from services.claude_service import start_task, confirm_task, deny_task
+from services.ai import get_ai_for_container, clear_all_sessions
+from services.claude_service import start_task, confirm_task, deny_task, chat_with_claude
 
 app = FastAPI()
 
@@ -50,6 +50,9 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("WebSocket connected")
 
+    # Track the current container ID for audio messages
+    current_container_id = "main"
+
     try:
         while True:
             message = await websocket.receive()
@@ -57,7 +60,8 @@ async def websocket_endpoint(websocket: WebSocket):
             # Handle binary audio data
             if "bytes" in message:
                 data = message["bytes"]
-                print(f"Received {len(data)} bytes of audio")
+                container_id = current_container_id
+                print(f"Received {len(data)} bytes of audio for container {container_id}")
 
                 # Transcribe audio to text
                 user_text = transcribe(data)
@@ -69,48 +73,91 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Send transcription to client
                 await websocket.send_json({
                     "type": "transcription",
+                    "containerId": container_id,
                     "text": user_text
                 })
 
-                # Get AI response
-                ai = get_ai_provider()
+                # Get AI response using container-specific session
+                ai = get_ai_for_container(container_id)
                 ai_response = ai.get_response(user_text)
-                print(f"AI response: {ai_response}")
+                print(f"AI response for {container_id}: {ai_response}")
 
                 # Send AI response to client
                 await websocket.send_json({
                     "type": "response",
+                    "containerId": container_id,
                     "text": ai_response
                 })
 
-            # Handle JSON text messages (Claude commands)
+            # Handle JSON text messages
             elif "text" in message:
                 data = json.loads(message["text"])
                 msg_type = data.get("type")
 
-                if msg_type == "claude_request":
-                    print(f"Claude request: {data['text']}")
-                    task = await start_task(data["text"])
+                # Handle audio metadata (sets container for next audio message)
+                if msg_type == "audio_meta":
+                    current_container_id = data.get("containerId", "main")
+                    print(f"Set container ID to: {current_container_id}")
+
+                elif msg_type == "gemini_request":
+                    # Direct Gemini request for a specific container
+                    container_id = data.get("containerId", "main")
+                    text = data.get("text", "")
+                    print(f"Gemini request for {container_id}: {text}")
+
+                    ai = get_ai_for_container(container_id)
+                    ai_response = ai.get_response(text)
+
+                    await websocket.send_json({
+                        "type": "response",
+                        "containerId": container_id,
+                        "text": ai_response
+                    })
+
+                elif msg_type == "claude_chat":
+                    # Conversational Claude mode - quick chat without planning
+                    container_id = data.get("containerId", "main")
+                    text = data.get("text", "")
+                    context = data.get("context", "")
+                    print(f"Claude chat for {container_id}: {text}")
+
+                    response = await chat_with_claude(text, context)
+
+                    await websocket.send_json({
+                        "type": "claude_chat_response",
+                        "containerId": container_id,
+                        "text": response
+                    })
+
+                elif msg_type == "claude_request":
+                    # Planning mode - full plan with approval flow
+                    container_id = data.get("containerId", "main")
+                    print(f"Claude plan request for {container_id}: {data['text']}")
+                    task = await start_task(data["text"], container_id)
 
                     if task.status.value == "failed":
                         await websocket.send_json({
                             "type": "claude_error",
+                            "containerId": container_id,
                             "taskId": task.id,
                             "error": task.error
                         })
                     else:
                         await websocket.send_json({
                             "type": "claude_plan",
+                            "containerId": container_id,
                             "taskId": task.id,
                             "plan": task.plan
                         })
 
                 elif msg_type == "claude_confirm":
                     task_id = data.get("taskId")
-                    print(f"Claude confirm: {task_id}")
+                    container_id = data.get("containerId", "main")
+                    print(f"Claude confirm for {container_id}: {task_id}")
 
                     await websocket.send_json({
                         "type": "claude_running",
+                        "containerId": container_id,
                         "taskId": task_id
                     })
 
@@ -119,16 +166,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 elif msg_type == "claude_deny":
                     task_id = data.get("taskId")
-                    print(f"Claude deny: {task_id}")
+                    container_id = data.get("containerId", "main")
+                    print(f"Claude deny for {container_id}: {task_id}")
                     deny_task(task_id)
 
                     await websocket.send_json({
                         "type": "claude_denied",
+                        "containerId": container_id,
                         "taskId": task_id
                     })
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")
+        # Clear all AI sessions on disconnect
+        clear_all_sessions()
 
 class TTSRequest(BaseModel):
     text: str

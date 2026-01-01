@@ -1,4 +1,4 @@
-import type { Message } from "../hooks/useVoiceChat"
+import type { Message } from "../context/ContainerContext"
 
 interface ChatViewProps {
   messages: Message[]

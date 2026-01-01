@@ -1,35 +1,78 @@
-import { useVoiceChat } from "./hooks/useVoiceChat"
+import { ContainerProvider } from "./context/ContainerContext"
+import { useContainers } from "./hooks/useContainers"
+import { useSharedVoice } from "./hooks/useSharedVoice"
 import { ChatView } from "./components/ChatView"
 import { StatusIndicator } from "./components/StatusIndicator"
+import { ContainerTabs } from "./components/ContainerTabs"
 import { TTSPage } from "./components/TTSPage"
 
-function VoiceAssistant() {
-  const { status, messages, error, isLoading, start, stop, speakingId, playTTS, stopAudio, activeAI } = useVoiceChat()
+function VoiceAssistantContent() {
+  const {
+    containers,
+    activeContainerId,
+    activeContainer,
+    createContainer,
+    switchToContainer,
+    deleteContainer,
+  } = useContainers()
 
-  const isActive = status !== "idle"
+  const {
+    globalStatus,
+    isLoading,
+    error,
+    start,
+    stop,
+    stopAudio,
+    playTTS,
+  } = useSharedVoice()
+
+  const isActive = globalStatus !== "idle"
+
+  const handleSpeak = (text: string, messageId: string) => {
+    playTTS(activeContainerId, text, messageId)
+  }
+
+  const handleCreateContainer = () => {
+    const newId = createContainer({ inheritAI: activeContainer.activeAI })
+    if (newId) {
+      switchToContainer(newId)
+    }
+  }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+    <div className="h-screen flex flex-col bg-gray-900">
+      {/* Header */}
+      <header className="bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-lg font-semibold text-gray-900">Voice Assistant</h1>
-          <a href="/tts" className="text-blue-500 hover:text-blue-600 text-sm">
+          <h1 className="text-lg font-semibold text-white">Voice Assistant</h1>
+          <a href="/tts" className="text-blue-400 hover:text-blue-300 text-sm">
             TTS Only
           </a>
         </div>
-        <StatusIndicator status={status} activeAI={activeAI} />
+        <StatusIndicator status={globalStatus} activeAI={activeContainer.activeAI} />
       </header>
 
+      {/* Container Tabs */}
+      <ContainerTabs
+        containers={containers}
+        activeId={activeContainerId}
+        onSelect={switchToContainer}
+        onCreate={handleCreateContainer}
+        onClose={deleteContainer}
+      />
+
+      {/* Chat View for active container */}
       <ChatView
-        messages={messages}
-        speakingId={speakingId}
-        onSpeak={playTTS}
+        messages={activeContainer.messages}
+        speakingId={activeContainer.speakingId}
+        onSpeak={handleSpeak}
         onStopSpeak={stopAudio}
       />
 
-      <footer className="bg-white border-t border-gray-200 p-4">
+      {/* Footer */}
+      <footer className="bg-gray-800 border-t border-gray-700 p-4">
         {error && (
-          <p className="text-red-500 text-sm mb-2 text-center">{error}</p>
+          <p className="text-red-400 text-sm mb-2 text-center">{error}</p>
         )}
 
         <div className="flex justify-center">
@@ -47,6 +90,14 @@ function VoiceAssistant() {
         </div>
       </footer>
     </div>
+  )
+}
+
+function VoiceAssistant() {
+  return (
+    <ContainerProvider>
+      <VoiceAssistantContent />
+    </ContainerProvider>
   )
 }
 

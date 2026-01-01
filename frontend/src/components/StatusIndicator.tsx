@@ -1,4 +1,4 @@
-import type { Status } from "../hooks/useVoiceChat"
+import type { Status } from "../context/ContainerContext"
 
 interface StatusIndicatorProps {
   status: Status
@@ -41,13 +41,13 @@ export function StatusIndicator({ status, activeAI = "gemini" }: StatusIndicator
             }`}
           />
         </div>
-        <span className="text-sm font-medium text-gray-700">{config.label}</span>
+        <span className="text-sm font-medium text-gray-300">{config.label}</span>
       </div>
       <span
         className={`text-xs px-2 py-0.5 rounded-full font-medium ${
           activeAI === "claude"
-            ? "bg-orange-100 text-orange-700"
-            : "bg-blue-100 text-blue-700"
+            ? "bg-orange-500/20 text-orange-400"
+            : "bg-blue-500/20 text-blue-400"
         }`}
       >
         {activeAI === "claude" ? "Claude" : "Gemini"}

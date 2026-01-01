@@ -1,7 +1,7 @@
 import asyncio
 import os
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Optional, AsyncGenerator
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -20,6 +20,7 @@ class TaskStatus(Enum):
 class ClaudeTask:
     id: str
     prompt: str
+    container_id: str = "main"
     plan: Optional[str] = None
     status: TaskStatus = TaskStatus.PLANNING
     result: Optional[str] = None
@@ -34,20 +35,69 @@ def get_work_dir() -> str:
     return os.getenv("CLAUDE_WORK_DIR", str(Path.home() / "dev"))
 
 
-async def start_task(prompt: str) -> ClaudeTask:
+async def chat_with_claude(user_message: str, conversation_context: str = "") -> str:
+    """Have a brief conversational exchange with Claude CLI.
+
+    Uses --allowedTools "" to prevent tool use and get fast responses.
+    This is for discussion only - no file access or code execution.
+
+    Args:
+        user_message: The user's current message
+        conversation_context: Optional previous conversation for context
+
+    Returns:
+        Claude's response text
+    """
+    # Build a prompt that explains limitations and encourages action trigger
+    chat_prompt = f"""You are a voice assistant in DISCUSSION MODE. You CANNOT create files, run commands, or make changes.
+If the user asks you to DO something (create, fix, write, etc.), tell them to say "do this" or "do it" when ready.
+Keep responses brief (2-3 sentences).
+{f"Context:{chr(10)}{conversation_context}{chr(10)}{chr(10)}" if conversation_context else ""}User: {user_message}"""
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", chat_prompt,
+            "--allowedTools", "",  # No tools = fast response
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=get_work_dir()
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=15.0  # Should be fast without tools
+        )
+
+        if proc.returncode != 0:
+            error_msg = stderr.decode().strip()
+            return f"Sorry, I encountered an error: {error_msg}"
+
+        return stdout.decode().strip()
+
+    except asyncio.TimeoutError:
+        return "Sorry, I took too long to respond. Try again."
+    except FileNotFoundError:
+        return "Claude CLI is not installed or not in PATH."
+    except Exception as e:
+        return f"Sorry, an error occurred: {str(e)}"
+
+
+async def start_task(prompt: str, container_id: str = "main") -> ClaudeTask:
     """Start Claude in planning mode to get task plan."""
     task_id = str(uuid.uuid4())[:8]
     task = ClaudeTask(
         id=task_id,
         prompt=prompt,
+        container_id=container_id,
         status=TaskStatus.PLANNING,
     )
     _tasks[task_id] = task
 
     try:
-        # Run Claude with --print to get plan without executing
+        # Run Claude with Read tool to analyze and create a plan
         proc = await asyncio.create_subprocess_exec(
-            "claude", "-p", prompt, "--print",
+            "claude", "-p", prompt,
+            "--allowedTools", "Read,Glob,Grep",  # Read-only for planning
+            "--print",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=get_work_dir()
@@ -84,6 +134,7 @@ async def confirm_task(task_id: str, websocket) -> None:
     if not task:
         await websocket.send_json({
             "type": "claude_error",
+            "containerId": "main",
             "taskId": task_id,
             "error": "Task not found"
         })
@@ -92,6 +143,7 @@ async def confirm_task(task_id: str, websocket) -> None:
     if task.status != TaskStatus.PENDING_APPROVAL:
         await websocket.send_json({
             "type": "claude_error",
+            "containerId": task.container_id,
             "taskId": task_id,
             "error": f"Task is not pending approval (status: {task.status.value})"
         })
@@ -116,6 +168,7 @@ async def confirm_task(task_id: str, websocket) -> None:
             task.error = stderr.decode().strip() or "Claude execution failed"
             await websocket.send_json({
                 "type": "claude_error",
+                "containerId": task.container_id,
                 "taskId": task_id,
                 "error": task.error
             })
@@ -127,6 +180,7 @@ async def confirm_task(task_id: str, websocket) -> None:
         # Send completion notification
         await websocket.send_json({
             "type": "claude_complete",
+            "containerId": task.container_id,
             "taskId": task_id,
             "result": task.result
         })
@@ -136,6 +190,7 @@ async def confirm_task(task_id: str, websocket) -> None:
         task.error = str(e)
         await websocket.send_json({
             "type": "claude_error",
+            "containerId": task.container_id,
             "taskId": task_id,
             "error": task.error
         })

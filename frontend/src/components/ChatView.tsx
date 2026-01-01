@@ -46,24 +46,37 @@ export function ChatView({ messages, speakingId, onSpeak, onStopSpeak }: ChatVie
           }`}
         >
           <div
-            className={`max-w-[80%] rounded-2xl px-4 py-2 flex items-start gap-2 ${
+            className={`max-w-[80%] rounded-2xl px-4 py-2 ${
               message.role === "user"
                 ? "bg-blue-500 text-white"
                 : "bg-gray-200 text-gray-900"
             }`}
           >
-            <p className="text-sm whitespace-pre-wrap flex-1">{message.text}</p>
-            <button
-              onClick={() => handleSpeak(message)}
-              className={`flex-shrink-0 p-1 rounded hover:bg-black/10 transition-colors ${
-                speakingId === message.id
-                  ? "opacity-100"
-                  : "opacity-60 hover:opacity-100"
-              }`}
-              title={speakingId === message.id ? "Stop" : "Speak"}
-            >
-              <SpeakerIcon speaking={speakingId === message.id} />
-            </button>
+            {message.role === "assistant" && message.source && (
+              <span
+                className={`inline-block text-xs px-2 py-0.5 rounded-full mb-1 ${
+                  message.source === "claude"
+                    ? "bg-orange-100 text-orange-700"
+                    : "bg-blue-100 text-blue-700"
+                }`}
+              >
+                {message.source === "claude" ? "Claude" : "Gemini"}
+              </span>
+            )}
+            <div className="flex items-start gap-2">
+              <p className="text-sm whitespace-pre-wrap flex-1">{message.text}</p>
+              <button
+                onClick={() => handleSpeak(message)}
+                className={`flex-shrink-0 p-1 rounded hover:bg-black/10 transition-colors ${
+                  speakingId === message.id
+                    ? "opacity-100"
+                    : "opacity-60 hover:opacity-100"
+                }`}
+                title={speakingId === message.id ? "Stop" : "Speak"}
+              >
+                <SpeakerIcon speaking={speakingId === message.id} />
+              </button>
+            </div>
           </div>
         </div>
       ))}

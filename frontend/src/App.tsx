@@ -1,17 +1,23 @@
 import { useVoiceChat } from "./hooks/useVoiceChat"
 import { ChatView } from "./components/ChatView"
 import { StatusIndicator } from "./components/StatusIndicator"
+import { TTSPage } from "./components/TTSPage"
 
-function App() {
-  const { status, messages, error, isLoading, start, stop, speakingId, playTTS, stopAudio } = useVoiceChat()
+function VoiceAssistant() {
+  const { status, messages, error, isLoading, start, stop, speakingId, playTTS, stopAudio, activeAI } = useVoiceChat()
 
   const isActive = status !== "idle"
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
       <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-gray-900">Voice Assistant</h1>
-        <StatusIndicator status={status} />
+        <div className="flex items-center gap-4">
+          <h1 className="text-lg font-semibold text-gray-900">Voice Assistant</h1>
+          <a href="/tts" className="text-blue-500 hover:text-blue-600 text-sm">
+            TTS Only
+          </a>
+        </div>
+        <StatusIndicator status={status} activeAI={activeAI} />
       </header>
 
       <ChatView
@@ -42,6 +48,16 @@ function App() {
       </footer>
     </div>
   )
+}
+
+function App() {
+  const path = window.location.pathname
+
+  if (path === "/tts") {
+    return <TTSPage />
+  }
+
+  return <VoiceAssistant />
 }
 
 export default App

@@ -19,6 +19,9 @@ if [ ! -f "venv/.installed" ]; then
     touch venv/.installed
 fi
 
+# Set cuDNN library path
+export LD_LIBRARY_PATH="$SCRIPT_DIR/venv/lib/python3.11/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
+
 # Run the backend
 echo "Starting backend server..."
 python main.py

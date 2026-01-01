@@ -1,12 +1,15 @@
 import io
+import re
 import wave
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import numpy as np
 import torch
 
 _model = None
+_model_lock = threading.Lock()
 _chatterbox_available = False
 
 # Reference voice for cloning
@@ -63,13 +66,13 @@ def synthesize(text: str) -> bytes:
             "Install with: pip install chatterbox-tts torchaudio"
         )
 
-    # Generate audio with voice cloning
-    if REFERENCE_VOICE.exists():
-        print(f"Using reference voice: {REFERENCE_VOICE}")
-        wav_tensor = model.generate(text, audio_prompt_path=str(REFERENCE_VOICE))
-    else:
-        print("No reference voice found, using default")
-        wav_tensor = model.generate(text)
+    # Use lock for thread safety during generation
+    with _model_lock:
+        # Generate audio with voice cloning
+        if REFERENCE_VOICE.exists():
+            wav_tensor = model.generate(text, audio_prompt_path=str(REFERENCE_VOICE))
+        else:
+            wav_tensor = model.generate(text)
 
     # Convert tensor to numpy
     if wav_tensor.dim() == 1:
@@ -106,3 +109,23 @@ def synthesize(text: str) -> bytes:
 def is_available() -> bool:
     """Check if TTS is available."""
     return _chatterbox_available
+
+
+def split_into_sentences(text: str) -> List[str]:
+    """Split text into sentences for chunked TTS."""
+    # Split on sentence boundaries
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+
+    # Filter empty and merge very short sentences
+    result = []
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        # Merge short sentences with previous
+        if result and len(result[-1]) < 20:
+            result[-1] += " " + s
+        else:
+            result.append(s)
+
+    return result if result else [text]

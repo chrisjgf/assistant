@@ -6,6 +6,7 @@ export interface Message {
   id: string
   role: "user" | "assistant"
   text: string
+  source?: "gemini" | "claude"
 }
 
 declare global {
@@ -37,6 +38,13 @@ export function useVoiceChat() {
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [speakingId, setSpeakingId] = useState<string | null>(null)
+  const [activeAI, setActiveAIState] = useState<"gemini" | "claude">("gemini")
+
+  // Helper to update both state and ref
+  const setActiveAI = useCallback((ai: "gemini" | "claude") => {
+    activeAIRef.current = ai
+    setActiveAIState(ai)
+  }, [])
 
   const wsRef = useRef<WebSocket | null>(null)
   const vadRef = useRef<Awaited<ReturnType<typeof window.vad.MicVAD.new>> | null>(null)
@@ -44,6 +52,9 @@ export function useVoiceChat() {
   const thinkingAudioRef = useRef<{ stop: () => void; pitchUp: () => void } | null>(null)
   const ttsRequestIdRef = useRef(0)
   const skipNextResponseRef = useRef(false)
+  const aiDisabledRef = useRef(false)
+  const claudeTaskRef = useRef<{ id: string; plan: string } | null>(null)
+  const activeAIRef = useRef<"gemini" | "claude">("gemini")
 
   // Create a soft rhythmic thinking beat using Web Audio API
   const startThinkingBeat = useCallback(() => {
@@ -123,13 +134,12 @@ export function useVoiceChat() {
     setSpeakingId(messageId)
 
     try {
-      const response = await fetch(`${API_URL}/tts`, {
+      const response = await fetch(`${API_URL}/tts/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       })
 
-      // Check if this request is still the latest
       if (thisRequestId !== ttsRequestIdRef.current) {
         console.log("TTS request cancelled - newer request pending")
         return
@@ -139,32 +149,113 @@ export function useVoiceChat() {
         throw new Error("TTS request failed")
       }
 
-      const audioBlob = await response.blob()
+      // Check if response is chunked (octet-stream) or single WAV
+      const contentType = response.headers.get("content-type") || ""
 
-      // Check again after blob download
-      if (thisRequestId !== ttsRequestIdRef.current) {
-        console.log("TTS request cancelled - newer request pending")
+      if (contentType.includes("audio/wav")) {
+        // Single chunk - use simple audio playback
+        const audioBlob = await response.blob()
+        if (thisRequestId !== ttsRequestIdRef.current) return
+
+        const audioUrl = URL.createObjectURL(audioBlob)
+        const audio = new Audio(audioUrl)
+        audioRef.current = audio
+
+        audio.onended = () => {
+          setSpeakingId(null)
+          setStatus("listening")
+          URL.revokeObjectURL(audioUrl)
+        }
+        audio.onerror = () => {
+          setSpeakingId(null)
+          setStatus("listening")
+        }
+
+        stopThinkingBeat()
+        await audio.play()
         return
       }
 
-      const audioUrl = URL.createObjectURL(audioBlob)
-      const audio = new Audio(audioUrl)
-      audioRef.current = audio
+      // Chunked response - read length-prefixed WAV chunks
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error("No response body")
 
-      audio.onended = () => {
-        setSpeakingId(null)
-        setStatus("listening")
-        URL.revokeObjectURL(audioUrl)
+      const audioContext = new AudioContext()
+      const audioQueue: AudioBuffer[] = []
+      let isPlaying = false
+      let readerDone = false
+      let buffer = new Uint8Array(0)
+
+      const checkComplete = () => {
+        if (readerDone && audioQueue.length === 0 && !isPlaying) {
+          setSpeakingId(null)
+          setStatus("listening")
+          audioContext.close()
+        }
       }
 
-      audio.onerror = () => {
-        setSpeakingId(null)
-        setStatus("listening")
+      const playNext = () => {
+        if (audioQueue.length === 0) {
+          isPlaying = false
+          checkComplete()
+          return
+        }
+        isPlaying = true
+        const audioBuffer = audioQueue.shift()!
+        const source = audioContext.createBufferSource()
+        source.buffer = audioBuffer
+        source.connect(audioContext.destination)
+        source.onended = playNext
+        source.start()
       }
 
-      // Stop thinking beat just before audio plays
-      stopThinkingBeat()
-      await audio.play()
+      // Read and process chunks
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (thisRequestId !== ttsRequestIdRef.current) {
+          reader.cancel()
+          audioContext.close()
+          return
+        }
+
+        if (done) {
+          readerDone = true
+          checkComplete()
+          break
+        }
+
+        // Append new data to buffer
+        const newBuffer = new Uint8Array(buffer.length + value.length)
+        newBuffer.set(buffer)
+        newBuffer.set(value, buffer.length)
+        buffer = newBuffer
+
+        // Parse length-prefixed chunks from buffer
+        while (buffer.length >= 4) {
+          const length = new DataView(buffer.buffer, buffer.byteOffset).getUint32(0, false)
+
+          if (buffer.length < 4 + length) break // Need more data
+
+          // Extract WAV chunk
+          const wavData = buffer.slice(4, 4 + length)
+          buffer = buffer.slice(4 + length)
+
+          try {
+            const audioBuffer = await audioContext.decodeAudioData(wavData.buffer.slice(wavData.byteOffset, wavData.byteOffset + wavData.byteLength))
+            audioQueue.push(audioBuffer)
+            console.log(`Queued audio chunk: ${(audioBuffer.duration).toFixed(2)}s`)
+
+            // Start playback on first chunk
+            if (!isPlaying) {
+              stopThinkingBeat()
+              playNext()
+            }
+          } catch (decodeErr) {
+            console.warn("Failed to decode audio chunk:", decodeErr)
+          }
+        }
+      }
     } catch (err) {
       console.warn("TTS failed, using browser TTS:", err)
       stopThinkingBeat()
@@ -214,6 +305,8 @@ export function useVoiceChat() {
         // Commands to handle locally (isolated phrases only)
         const ignoredCommands = ["stop", "okay", "ok", "got it"]
         const saveChatCommands = ["save chat", "safe chat"]
+        const disableCommands = ["disable", "disabled", "pause"]
+        const enableCommands = ["start", "enable", "resume"]
 
         // Helper to update last pending message
         const updatePendingMessage = (text: string | null) => {
@@ -242,9 +335,142 @@ export function useVoiceChat() {
           updatePendingMessage("Save chat")
           setMessages((prev) => [
             ...prev,
-            { id: crypto.randomUUID(), role: "assistant", text: "Chat saved." },
+            { id: crypto.randomUUID(), role: "assistant", text: "Chat saved.", source: activeAIRef.current },
           ])
           setStatus("listening")
+          skipNextResponseRef.current = true
+          return
+        }
+
+        // Handle disable commands
+        if (disableCommands.includes(normalized)) {
+          stopThinkingBeat()
+          aiDisabledRef.current = true
+          updatePendingMessage("Disable")
+          setMessages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: "assistant", text: "AI disabled. Say 'start' to re-enable.", source: activeAIRef.current },
+          ])
+          setStatus("listening")
+          skipNextResponseRef.current = true
+          return
+        }
+
+        // Handle enable commands
+        if (enableCommands.includes(normalized)) {
+          stopThinkingBeat()
+          aiDisabledRef.current = false
+          updatePendingMessage("Start")
+          setMessages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: "assistant", text: "AI enabled.", source: activeAIRef.current },
+          ])
+          setStatus("listening")
+          skipNextResponseRef.current = true
+          return
+        }
+
+        // Handle Claude mode exit commands
+        if (activeAIRef.current === "claude") {
+          // Exit if user says "exit" or mentions "gemini"
+          if (normalized === "exit" || normalized.includes("gemini")) {
+            stopThinkingBeat()
+            setActiveAI("gemini")
+            updatePendingMessage(data.text)
+            const messageId = crypto.randomUUID()
+            setMessages((prev) => [
+              ...prev,
+              { id: messageId, role: "assistant", text: "Switched back to Gemini.", source: "gemini" },
+            ])
+            playTTS("Switched back to Gemini.", messageId)
+            setStatus("listening")
+            skipNextResponseRef.current = true
+            return
+          }
+        }
+
+        // Handle accept/deny when Claude task is pending
+        if (claudeTaskRef.current) {
+          const acceptCommands = ["accept", "except", "yes", "approve", "do it", "go ahead", "go for it", "proceed"]
+          const denyCommands = ["deny", "no", "cancel", "nevermind", "never mind"]
+
+          if (acceptCommands.includes(normalized)) {
+            stopThinkingBeat()
+            updatePendingMessage("Accept")
+            wsRef.current?.send(JSON.stringify({
+              type: "claude_confirm",
+              taskId: claudeTaskRef.current.id
+            }))
+            claudeTaskRef.current = null
+            setStatus("listening")
+            skipNextResponseRef.current = true
+            return
+          }
+
+          if (denyCommands.includes(normalized)) {
+            stopThinkingBeat()
+            updatePendingMessage("Cancel")
+            wsRef.current?.send(JSON.stringify({
+              type: "claude_deny",
+              taskId: claudeTaskRef.current.id
+            }))
+            claudeTaskRef.current = null
+            setStatus("listening")
+            skipNextResponseRef.current = true
+            return
+          }
+        }
+
+        // Handle "switch to <AI>" commands
+        const switchMatch = data.text.match(/^switch\s+to\s+(claude|cloud|claw|clude|clawed|clode|gemini)/i)
+        if (switchMatch) {
+          const target = switchMatch[1].toLowerCase()
+          const isGemini = target === "gemini"
+          stopThinkingBeat()
+          updatePendingMessage(data.text)
+          setActiveAI(isGemini ? "gemini" : "claude")
+          const messageId = crypto.randomUUID()
+          const aiName = isGemini ? "Gemini" : "Claude"
+          setMessages((prev) => [
+            ...prev,
+            { id: messageId, role: "assistant", text: `Switched to ${aiName}.`, source: isGemini ? "gemini" : "claude" },
+          ])
+          playTTS(`Switched to ${aiName}.`, messageId)
+          setStatus("listening")
+          skipNextResponseRef.current = true
+          return
+        }
+
+        // Detect "Claude, ..." pattern (including common mishearings)
+        const claudeMatch = data.text.match(/^(claude|cloud|claw|clude|clawed|clode)[,.]?\s+(.+)/i)
+        if (claudeMatch) {
+          stopThinkingBeat()
+          updatePendingMessage(data.text)
+          startThinkingBeat() // Restart for Claude processing
+          setActiveAI("claude") // Enter Claude mode
+
+          // Send to Claude instead of Gemini
+          wsRef.current?.send(JSON.stringify({
+            type: "claude_request",
+            text: claudeMatch[2]
+          }))
+          skipNextResponseRef.current = true
+          return
+        }
+
+        // In Claude mode, route all messages to Claude
+        if (activeAIRef.current === "claude") {
+          stopThinkingBeat()
+          updatePendingMessage(data.text)
+          startThinkingBeat()
+
+          // Clear pending task since user is sending new message
+          claudeTaskRef.current = null
+
+          wsRef.current?.send(JSON.stringify({
+            type: "claude_request",
+            text: data.text
+          }))
           skipNextResponseRef.current = true
           return
         }
@@ -254,6 +480,16 @@ export function useVoiceChat() {
           console.log(`Ignored command: "${data.text}"`)
           stopThinkingBeat()
           updatePendingMessage(null)
+          setStatus("listening")
+          skipNextResponseRef.current = true
+          return
+        }
+
+        // If AI is disabled, show the message but don't process with AI
+        if (aiDisabledRef.current) {
+          console.log("AI disabled, skipping message:", data.text)
+          stopThinkingBeat()
+          updatePendingMessage(data.text)
           setStatus("listening")
           skipNextResponseRef.current = true
           return
@@ -275,9 +511,58 @@ export function useVoiceChat() {
         const messageId = crypto.randomUUID()
         setMessages((prev) => [
           ...prev,
-          { id: messageId, role: "assistant", text: data.text },
+          { id: messageId, role: "assistant", text: data.text, source: "gemini" },
         ])
         playTTS(data.text, messageId)
+      } else if (data.type === "claude_plan") {
+        // Claude has a plan, waiting for accept/deny
+        stopThinkingBeat()
+        claudeTaskRef.current = { id: data.taskId, plan: data.plan }
+        setActiveAI("claude")
+
+        const messageId = crypto.randomUUID()
+        const displayText = `Claude's plan: ${data.plan}\n\nSay "accept" or "cancel".`
+        setMessages((prev) => [
+          ...prev,
+          { id: messageId, role: "assistant", text: displayText, source: "claude" },
+        ])
+
+        // Speak a shorter version
+        const shortPlan = data.plan.length > 300 ? data.plan.slice(0, 300) + "..." : data.plan
+        playTTS(`Here's my plan: ${shortPlan}. Do you want me to proceed?`, messageId)
+      } else if (data.type === "claude_running") {
+        const messageId = crypto.randomUUID()
+        setMessages((prev) => [
+          ...prev,
+          { id: messageId, role: "assistant", text: "Task started. I'll let you know when it's done.", source: "claude" },
+        ])
+        playTTS("Task started. I'll let you know when it's done.", messageId)
+      } else if (data.type === "claude_complete") {
+        // Summarize long results for TTS
+        const resultText = data.result || "Task completed."
+        const shortResult = resultText.length > 200 ? resultText.slice(0, 200) + "..." : resultText
+
+        const messageId = crypto.randomUUID()
+        setMessages((prev) => [
+          ...prev,
+          { id: messageId, role: "assistant", text: `Claude completed: ${resultText}`, source: "claude" },
+        ])
+        playTTS(`Task complete. ${shortResult}`, messageId)
+      } else if (data.type === "claude_denied") {
+        const messageId = crypto.randomUUID()
+        setMessages((prev) => [
+          ...prev,
+          { id: messageId, role: "assistant", text: "Task cancelled.", source: "claude" },
+        ])
+        playTTS("Task cancelled.", messageId)
+      } else if (data.type === "claude_error") {
+        const messageId = crypto.randomUUID()
+        const errorText = data.error || "An error occurred."
+        setMessages((prev) => [
+          ...prev,
+          { id: messageId, role: "assistant", text: `Claude error: ${errorText}`, source: "claude" },
+        ])
+        playTTS(`Sorry, there was an error: ${errorText}`, messageId)
       }
     }
 
@@ -292,7 +577,7 @@ export function useVoiceChat() {
     }
 
     wsRef.current = ws
-  }, [playTTS, saveChat, stopThinkingBeat])
+  }, [playTTS, saveChat, setActiveAI, startThinkingBeat, stopThinkingBeat])
 
   const start = useCallback(async () => {
     if (!window.vad) {
@@ -371,6 +656,7 @@ export function useVoiceChat() {
     isListening: status === "listening",
     isSpeaking: status === "speaking",
     speakingId,
+    activeAI,
     start,
     stop,
     stopAudio,

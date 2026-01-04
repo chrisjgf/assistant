@@ -14,12 +14,13 @@ export type VoiceCommandType =
   | "deny_task"
   | "plan_task"
   | "execute_task"
+  | "collect_context"
   | "ignored"
 
 export interface VoiceCommand {
   type: VoiceCommandType
   containerId?: ContainerId
-  targetAI?: "gemini" | "claude"
+  targetAI?: "gemini" | "claude" | "local"
   rawText: string
 }
 
@@ -72,16 +73,22 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
 
   // === AI Switching Commands ===
 
-  // Switch to AI: "switch to claude" or "switch to gemini"
+  // Switch to AI: "switch to claude", "switch to gemini", or "switch to local"
   const aiSwitchPattern = new RegExp(
-    `^switch\\s+to\\s+(${CLAUDE_VARIANTS.join("|")}|gemini)$`,
+    `^switch\\s+to\\s+(${CLAUDE_VARIANTS.join("|")}|gemini|local)$`,
     "i"
   )
   const aiSwitchMatch = normalized.match(aiSwitchPattern)
   if (aiSwitchMatch) {
     const target = aiSwitchMatch[1].toLowerCase()
-    const isGemini = target === "gemini"
-    return { type: "switch_ai", targetAI: isGemini ? "gemini" : "claude", rawText: text }
+    if (target === "gemini") {
+      return { type: "switch_ai", targetAI: "gemini", rawText: text }
+    } else if (target === "local") {
+      return { type: "switch_ai", targetAI: "local", rawText: text }
+    } else {
+      // Claude variants
+      return { type: "switch_ai", targetAI: "claude", rawText: text }
+    }
   }
 
   // === Local Commands ===
@@ -119,6 +126,16 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
   // Execute task (Claude mode only)
   if (["do this", "do it", "execute", "run it", "execute this", "run this"].includes(normalized)) {
     return { type: "execute_task", rawText: text }
+  }
+
+  // Collect project context - flexible matching
+  if (
+    normalized.includes("collect context") ||
+    (normalized.includes("learn") && normalized.includes("project")) ||
+    (normalized.includes("scan") && normalized.includes("project")) ||
+    (normalized.includes("understand") && normalized.includes("codebase"))
+  ) {
+    return { type: "collect_context", rawText: text }
   }
 
   // Ignored commands

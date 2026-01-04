@@ -4,13 +4,14 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load env before setting CUDA device
+# Load env
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-# Set CUDA device if specified (must be before torch import)
-cuda_device = os.getenv("CUDA_DEVICE")
-if cuda_device:
-    os.environ["CUDA_VISIBLE_DEVICES"] = cuda_device
+# Set CUDA device for TTS/STT before any CUDA imports
+# Both use the same GPU (2080 Ti = cuda:0)
+stt_device = os.getenv("STT_DEVICE", "")
+if stt_device.startswith("cuda:"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = stt_device.split(":")[1]
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +24,7 @@ from fastapi.responses import StreamingResponse
 from services.whisper_service import transcribe, get_model as get_whisper_model
 from services.tts_service import synthesize, get_model as get_tts_model, is_available as tts_available, split_into_sentences
 from services.ai import get_ai_for_container, clear_all_sessions
-from services.claude_service import start_task, confirm_task, deny_task, chat_with_claude
+from services.claude_service import start_task, confirm_task, deny_task, chat_with_claude, collect_context
 
 app = FastAPI()
 
@@ -114,19 +115,66 @@ async def websocket_endpoint(websocket: WebSocket):
                         "text": ai_response
                     })
 
+                elif msg_type == "local_request":
+                    # Local LLM request for a specific container
+                    container_id = data.get("containerId", "main")
+                    text = data.get("text", "")
+                    print(f"Local LLM request for {container_id}: {text}")
+
+                    try:
+                        ai = get_ai_for_container(container_id, "local")
+                        ai_response = ai.get_response(text)
+
+                        await websocket.send_json({
+                            "type": "local_response",
+                            "containerId": container_id,
+                            "text": ai_response
+                        })
+                    except ConnectionError as e:
+                        await websocket.send_json({
+                            "type": "local_error",
+                            "containerId": container_id,
+                            "error": str(e)
+                        })
+                    except Exception as e:
+                        await websocket.send_json({
+                            "type": "local_error",
+                            "containerId": container_id,
+                            "error": f"Local LLM error: {str(e)}"
+                        })
+
                 elif msg_type == "claude_chat":
                     # Conversational Claude mode - quick chat without planning
                     container_id = data.get("containerId", "main")
                     text = data.get("text", "")
                     context = data.get("context", "")
+                    project_context = data.get("projectContext", "")
                     print(f"Claude chat for {container_id}: {text}")
 
-                    response = await chat_with_claude(text, context)
+                    # Include project context if available
+                    full_context = context
+                    if project_context:
+                        full_context = f"Project Context:\n{project_context}\n\n{context}"
+
+                    response = await chat_with_claude(text, full_context)
 
                     await websocket.send_json({
                         "type": "claude_chat_response",
                         "containerId": container_id,
                         "text": response
+                    })
+
+                elif msg_type == "claude_collect_context":
+                    # Collect project context
+                    container_id = data.get("containerId", "main")
+                    print(f"Collecting context for {container_id}")
+
+                    context = await collect_context()
+
+                    await websocket.send_json({
+                        "type": "claude_context_collected",
+                        "containerId": container_id,
+                        "context": context
                     })
 
                 elif msg_type == "claude_request":

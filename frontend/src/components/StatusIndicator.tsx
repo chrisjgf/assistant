@@ -2,7 +2,7 @@ import type { Status } from "../context/ContainerContext"
 
 interface StatusIndicatorProps {
   status: Status
-  activeAI?: "gemini" | "claude"
+  activeAI?: "gemini" | "claude" | "local"
 }
 
 const statusConfig = {
@@ -47,10 +47,12 @@ export function StatusIndicator({ status, activeAI = "gemini" }: StatusIndicator
         className={`text-xs px-2 py-0.5 rounded-full font-medium ${
           activeAI === "claude"
             ? "bg-orange-500/20 text-orange-400"
+            : activeAI === "local"
+            ? "bg-green-500/20 text-green-400"
             : "bg-blue-500/20 text-blue-400"
         }`}
       >
-        {activeAI === "claude" ? "Claude" : "Gemini"}
+        {activeAI === "claude" ? "Claude" : activeAI === "local" ? "Local" : "Gemini"}
       </span>
     </div>
   )

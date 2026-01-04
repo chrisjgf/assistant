@@ -340,19 +340,24 @@ export function useSharedVoice(): UseSharedVoiceReturn {
   }, [])
 
   const sendClaudeChat = useCallback((containerId: string, text: string, context: string = "") => {
+    const container = containersRef.current.get(containerId)
     wsRef.current?.send(JSON.stringify({
       type: "claude_chat",
       containerId,
       text,
       context,
+      projectContext: container?.projectContext || "",
     }))
   }, [])
 
   const sendClaudePlanRequest = useCallback((containerId: string, text: string) => {
+    const container = containersRef.current.get(containerId)
+    const projectContext = container?.projectContext || ""
+    const fullPrompt = projectContext ? `Project Context:\n${projectContext}\n\nTask: ${text}` : text
     wsRef.current?.send(JSON.stringify({
       type: "claude_request",
       containerId,
-      text,
+      text: fullPrompt,
     }))
   }, [])
 
@@ -395,7 +400,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
   // Add local assistant message
   const addLocalResponse = useCallback(
-    (containerId: string, text: string, source: "gemini" | "claude" = "gemini") => {
+    (containerId: string, text: string, source: "gemini" | "claude" | "local" = "gemini") => {
       const messageId = crypto.randomUUID()
       dispatch({
         type: "ADD_MESSAGE",
@@ -491,6 +496,12 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           const targetAI = container?.activeAI || "gemini"
           if (targetAI === "claude") {
             sendClaudeRequest(command.containerId, `Continue working on this: ${contextSummary}`)
+          } else if (targetAI === "local") {
+            wsRef.current?.send(JSON.stringify({
+              type: "local_request",
+              containerId: command.containerId,
+              text: `Continue working on this: ${contextSummary}`,
+            }))
           } else {
             // For Gemini, we send via WebSocket
             wsRef.current?.send(JSON.stringify({
@@ -549,7 +560,8 @@ export function useSharedVoice(): UseSharedVoiceReturn {
             stopThinkingBeat()
             updatePendingMessage(containerId, command.rawText)
             dispatch({ type: "SET_AI", payload: { containerId, ai: command.targetAI } })
-            const aiName = command.targetAI === "gemini" ? "Gemini" : "Claude"
+            const aiNames: Record<string, string> = { gemini: "Gemini", claude: "Claude", local: "Local" }
+            const aiName = aiNames[command.targetAI] || command.targetAI
             const messageId = addLocalResponse(containerId, `Switched to ${aiName}.`, command.targetAI)
             playTTS(containerId, `Switched to ${aiName}.`, messageId)
             return true
@@ -644,6 +656,22 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           return false
         }
 
+        case "collect_context": {
+          stopThinkingBeat()
+          updatePendingMessage(containerId, "Collect context")
+          startThinkingBeat()
+
+          dispatch({ type: "SET_AI", payload: { containerId, ai: "claude" } })
+          const messageId = addLocalResponse(containerId, "Scanning project...", "claude")
+          playTTS(containerId, "Let me explore this project.", messageId)
+
+          wsRef.current?.send(JSON.stringify({
+            type: "claude_collect_context",
+            containerId
+          }))
+          return true
+        }
+
         case "ignored": {
           stopThinkingBeat()
           updatePendingMessage(containerId, null)
@@ -726,6 +754,20 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           return
         }
 
+        // If in Local mode, route to Local LLM
+        if (container?.activeAI === "local") {
+          stopThinkingBeat()
+          updatePendingMessage(containerId, text)
+          startThinkingBeat()
+          wsRef.current?.send(JSON.stringify({
+            type: "local_request",
+            containerId,
+            text,
+          }))
+          skipNextResponseRef.current = true
+          return
+        }
+
         // If in Claude mode, route to Claude
         if (container?.activeAI === "claude") {
           stopThinkingBeat()
@@ -793,6 +835,39 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         })
         dispatch({ type: "SET_STATUS", payload: { containerId, status: "speaking" } })
         playTTS(containerId, data.text, messageId)
+      } else if (data.type === "local_response") {
+        // Local LLM response
+        stopThinkingBeat()
+        thinkingAudioRef.current?.pitchUp()
+
+        const messageId = crypto.randomUUID()
+        dispatch({
+          type: "ADD_MESSAGE",
+          payload: { containerId, message: { id: messageId, role: "assistant", text: data.text, source: "local" } },
+        })
+        dispatch({ type: "SET_STATUS", payload: { containerId, status: "speaking" } })
+        playTTS(containerId, data.text, messageId)
+      } else if (data.type === "local_error") {
+        // Local LLM error
+        stopThinkingBeat()
+        const errorText = data.error || "Local AI is not available."
+        const messageId = addLocalResponse(containerId, `Local error: ${errorText}`, "local")
+        playTTS(containerId, `Sorry, ${errorText}`, messageId)
+      } else if (data.type === "claude_context_collected") {
+        // Project context collected
+        stopThinkingBeat()
+        dispatch({
+          type: "SET_PROJECT_CONTEXT",
+          payload: { containerId, context: data.context }
+        })
+        const shortContext = data.context.length > 200 ? data.context.slice(0, 200) + "..." : data.context
+        const messageId = crypto.randomUUID()
+        dispatch({
+          type: "ADD_MESSAGE",
+          payload: { containerId, message: { id: messageId, role: "assistant", text: `Context collected:\n\n${shortContext}`, source: "claude" } },
+        })
+        dispatch({ type: "SET_STATUS", payload: { containerId, status: "speaking" } })
+        playTTS(containerId, "I've learned about this project. You can now ask me questions about it.", messageId)
       } else if (data.type === "claude_plan") {
         stopThinkingBeat()
         dispatch({

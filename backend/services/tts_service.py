@@ -8,6 +8,9 @@ from typing import Optional, List
 import numpy as np
 import torch
 
+# Enable optimized CUDA convolution algorithms
+torch.backends.cudnn.benchmark = True
+
 _model = None
 _model_lock = threading.Lock()
 _chatterbox_available = False
@@ -68,11 +71,13 @@ def synthesize(text: str) -> bytes:
 
     # Use lock for thread safety during generation
     with _model_lock:
-        # Generate audio with voice cloning
-        if REFERENCE_VOICE.exists():
-            wav_tensor = model.generate(text, audio_prompt_path=str(REFERENCE_VOICE))
-        else:
-            wav_tensor = model.generate(text)
+        # Generate audio with voice cloning and mixed precision
+        with torch.inference_mode():
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                if REFERENCE_VOICE.exists():
+                    wav_tensor = model.generate(text, audio_prompt_path=str(REFERENCE_VOICE))
+                else:
+                    wav_tensor = model.generate(text)
 
     # Convert tensor to numpy
     if wav_tensor.dim() == 1:

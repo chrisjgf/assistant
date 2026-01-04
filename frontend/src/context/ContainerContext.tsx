@@ -8,7 +8,7 @@ export interface Message {
   id: string
   role: "user" | "assistant"
   text: string
-  source?: "gemini" | "claude"
+  source?: "gemini" | "claude" | "local"
 }
 
 export interface ClaudeTask {
@@ -21,11 +21,12 @@ export interface Container {
   name: string
   messages: Message[]
   status: ContainerStatus
-  activeAI: "gemini" | "claude"
+  activeAI: "gemini" | "claude" | "local"
   speakingId: string | null
   claudeTask: ClaudeTask | null
   error: string | null
   pendingTTS: { text: string; messageId: string } | null
+  projectContext: string | null
 }
 
 export const MAX_CONTAINERS = 5
@@ -40,7 +41,7 @@ export function getContainerDisplayName(id: string): string {
 export function createContainer(
   id: ContainerId,
   options?: {
-    inheritAI?: "gemini" | "claude"
+    inheritAI?: "gemini" | "claude" | "local"
     initialMessages?: Message[]
   }
 ): Container {
@@ -54,11 +55,12 @@ export function createContainer(
     claudeTask: null,
     error: null,
     pendingTTS: null,
+    projectContext: null,
   }
 }
 
 export type ContainerAction =
-  | { type: "CREATE_CONTAINER"; payload: { id: ContainerId; inheritAI?: "gemini" | "claude"; initialMessages?: Message[] } }
+  | { type: "CREATE_CONTAINER"; payload: { id: ContainerId; inheritAI?: "gemini" | "claude" | "local"; initialMessages?: Message[] } }
   | { type: "DELETE_CONTAINER"; payload: { id: string } }
   | { type: "SET_ACTIVE"; payload: { id: string } }
   | { type: "ADD_MESSAGE"; payload: { containerId: string; message: Message } }
@@ -67,9 +69,10 @@ export type ContainerAction =
   | { type: "SET_STATUS"; payload: { containerId: string; status: ContainerStatus } }
   | { type: "SET_SPEAKING"; payload: { containerId: string; messageId: string | null } }
   | { type: "SET_ERROR"; payload: { containerId: string; error: string | null } }
-  | { type: "SET_AI"; payload: { containerId: string; ai: "gemini" | "claude" } }
+  | { type: "SET_AI"; payload: { containerId: string; ai: "gemini" | "claude" | "local" } }
   | { type: "SET_CLAUDE_TASK"; payload: { containerId: string; task: ClaudeTask | null } }
   | { type: "SET_PENDING_TTS"; payload: { containerId: string; tts: { text: string; messageId: string } | null } }
+  | { type: "SET_PROJECT_CONTEXT"; payload: { containerId: string; context: string } }
 
 export interface ContainerState {
   containers: Map<string, Container>
@@ -219,6 +222,17 @@ function containerReducer(state: ContainerState, action: ContainerAction): Conta
       return { ...state, containers: newContainers }
     }
 
+    case "SET_PROJECT_CONTEXT": {
+      const container = state.containers.get(action.payload.containerId)
+      if (!container) return state
+      const newContainers = new Map(state.containers)
+      newContainers.set(action.payload.containerId, {
+        ...container,
+        projectContext: action.payload.context,
+      })
+      return { ...state, containers: newContainers }
+    }
+
     default:
       return state
   }
@@ -238,7 +252,7 @@ export interface ContainerContextValue {
   activeContainerId: string
   activeContainer: Container
   dispatch: React.Dispatch<ContainerAction>
-  createContainer: (options?: { inheritAI?: "gemini" | "claude"; initialMessages?: Message[] }) => ContainerId | null
+  createContainer: (options?: { inheritAI?: "gemini" | "claude" | "local"; initialMessages?: Message[] }) => ContainerId | null
   deleteContainer: (id: string) => void
   switchToContainer: (id: string) => void
   sendToContainer: (containerId: string, context: Message[], prompt: string) => void
@@ -260,7 +274,7 @@ export function ContainerProvider({ children }: { children: React.ReactNode }) {
   }, [state.containers])
 
   const createContainerFn = useCallback(
-    (options?: { inheritAI?: "gemini" | "claude"; initialMessages?: Message[] }): ContainerId | null => {
+    (options?: { inheritAI?: "gemini" | "claude" | "local"; initialMessages?: Message[] }): ContainerId | null => {
       const id = getNextAvailableContainerId()
       if (!id) {
         console.warn("No available container slots")

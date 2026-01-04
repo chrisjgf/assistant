@@ -64,7 +64,7 @@ Keep responses brief (2-3 sentences).
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(),
-            timeout=15.0  # Should be fast without tools
+            timeout=30.0  # 30s for chat responses
         )
 
         if proc.returncode != 0:
@@ -81,6 +81,40 @@ Keep responses brief (2-3 sentences).
         return f"Sorry, an error occurred: {str(e)}"
 
 
+async def collect_context() -> str:
+    """Run Claude with Read/Glob to explore and summarize the project."""
+    prompt = """Explore this project and create a brief summary including:
+- What the project does (1-2 sentences)
+- Key files and their purposes
+- Tech stack
+- Directory structure overview
+Keep it concise (under 500 words) as this will be included in future prompts."""
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", prompt,
+            "--allowedTools", "Read,Glob,Grep,Bash",
+            "--print",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=get_work_dir()
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=120.0  # 2 minute timeout for exploration
+        )
+
+        if proc.returncode != 0:
+            return f"Error collecting context: {stderr.decode().strip()}"
+
+        return stdout.decode().strip()
+
+    except asyncio.TimeoutError:
+        return "Context collection timed out after 2 minutes."
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 async def start_task(prompt: str, container_id: str = "main") -> ClaudeTask:
     """Start Claude in planning mode to get task plan."""
     task_id = str(uuid.uuid4())[:8]
@@ -93,10 +127,10 @@ async def start_task(prompt: str, container_id: str = "main") -> ClaudeTask:
     _tasks[task_id] = task
 
     try:
-        # Run Claude with Read tool to analyze and create a plan
+        # Run Claude with no tools for fast planning (--print prevents execution anyway)
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", prompt,
-            "--allowedTools", "Read,Glob,Grep",  # Read-only for planning
+            "--allowedTools", "",  # No tools = fast response
             "--print",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -104,7 +138,7 @@ async def start_task(prompt: str, container_id: str = "main") -> ClaudeTask:
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(),
-            timeout=60.0  # 60 second timeout for planning
+            timeout=30.0  # 30 second timeout
         )
 
         if proc.returncode != 0:

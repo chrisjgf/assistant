@@ -79,10 +79,12 @@ export function ContainerTabs({
               className={`text-xs px-1.5 py-0.5 rounded ${
                 container.activeAI === "claude"
                   ? "bg-orange-500/20 text-orange-400"
+                  : container.activeAI === "local"
+                  ? "bg-green-500/20 text-green-400"
                   : "bg-blue-500/20 text-blue-400"
               }`}
             >
-              {container.activeAI === "claude" ? "C" : "G"}
+              {container.activeAI === "claude" ? "C" : container.activeAI === "local" ? "L" : "G"}
             </span>
 
             {/* Close button (not for main) */}

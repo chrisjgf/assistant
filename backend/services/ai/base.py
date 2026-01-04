@@ -13,3 +13,12 @@ class AIProvider(ABC):
     def reset_chat(self) -> None:
         """Reset the conversation history."""
         pass
+
+    def set_history(self, history: list[dict]) -> None:
+        """Set the conversation history from external source.
+
+        Args:
+            history: List of messages with 'role' and 'content' keys
+        """
+        # Default implementation does nothing - subclasses can override
+        pass

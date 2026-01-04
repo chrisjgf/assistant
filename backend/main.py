@@ -23,7 +23,7 @@ from fastapi.responses import StreamingResponse
 
 from services.whisper_service import transcribe, get_model as get_whisper_model
 from services.tts_service import synthesize, get_model as get_tts_model, is_available as tts_available, split_into_sentences
-from services.ai import get_ai_for_container, clear_all_sessions
+from services.ai import get_ai_for_container, clear_all_sessions, clear_container_session
 from services.claude_service import start_task, confirm_task, deny_task, chat_with_claude, collect_context
 
 app = FastAPI()
@@ -224,6 +224,25 @@ async def websocket_endpoint(websocket: WebSocket):
                         "taskId": task_id
                     })
 
+                elif msg_type == "set_history":
+                    # Set conversation history when switching AI providers
+                    container_id = data.get("containerId", "main")
+                    provider = data.get("provider", "gemini")
+                    history = data.get("history", [])
+                    print(f"Setting history for {container_id}/{provider}: {len(history)} messages")
+
+                    if provider in ("gemini", "local"):
+                        ai = get_ai_for_container(container_id, provider)
+                        ai.set_history(history)
+
+                elif msg_type == "clear_context":
+                    # Clear all context for a container
+                    container_id = data.get("containerId", "main")
+                    print(f"Clearing context for {container_id}")
+
+                    # Clear all AI sessions for this container
+                    clear_container_session(container_id)
+
     except WebSocketDisconnect:
         print("WebSocket disconnected")
         # Clear all AI sessions on disconnect
@@ -284,7 +303,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         ssl_keyfile=str(cert_dir / "key.pem"),
         ssl_certfile=str(cert_dir / "cert.pem"),
     )

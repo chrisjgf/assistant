@@ -10,11 +10,14 @@ export type VoiceCommandType =
   | "disable_ai"
   | "enable_ai"
   | "switch_ai"
+  | "escalate_ai"
   | "accept_task"
   | "deny_task"
   | "plan_task"
   | "execute_task"
   | "collect_context"
+  | "task_status"
+  | "wipe_context"
   | "ignored"
 
 export interface VoiceCommand {
@@ -62,12 +65,18 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
     }
   }
 
-  // Close container: "close container A", "close A"
-  const closeMatch = normalized.match(/^close\s+(container\s*[a-d]|[a-d])$/i)
+  // Close container: "close container A", "close A", or "close container" (closes current)
+  const closeMatch = normalized.match(/^close\s*(container)?(\s*[a-d])?$/i)
   if (closeMatch) {
-    const target = closeMatch[1].toLowerCase().replace(/container\s*/, "")
-    if (target !== "main" && CONTAINER_NAMES.includes(target as ContainerId)) {
-      return { type: "close_container", containerId: target as ContainerId, rawText: text }
+    const target = closeMatch[2]?.trim().toLowerCase()
+    if (target) {
+      // Specific container requested
+      if (target !== "main" && CONTAINER_NAMES.includes(target as ContainerId)) {
+        return { type: "close_container", containerId: target as ContainerId, rawText: text }
+      }
+    } else {
+      // No container specified - close current (containerId undefined, handler will use current)
+      return { type: "close_container", rawText: text }
     }
   }
 
@@ -88,6 +97,24 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
     } else {
       // Claude variants
       return { type: "switch_ai", targetAI: "claude", rawText: text }
+    }
+  }
+
+  // Escalate/move to AI with context: "escalate this to claude", "move to gemini"
+  // "escalates" is a common mishearing of "escalate"
+  const escalatePattern = new RegExp(
+    `^(escalates?|move)\\s+(this\\s+)?(to\\s+)?(${CLAUDE_VARIANTS.join("|")}|gemini|local)$`,
+    "i"
+  )
+  const escalateMatch = normalized.match(escalatePattern)
+  if (escalateMatch) {
+    const target = escalateMatch[4].toLowerCase()
+    if (target === "gemini") {
+      return { type: "escalate_ai", targetAI: "gemini", rawText: text }
+    } else if (target === "local") {
+      return { type: "escalate_ai", targetAI: "local", rawText: text }
+    } else {
+      return { type: "escalate_ai", targetAI: "claude", rawText: text }
     }
   }
 
@@ -136,6 +163,34 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
     (normalized.includes("understand") && normalized.includes("codebase"))
   ) {
     return { type: "collect_context", rawText: text }
+  }
+
+  // Task status: "what's the task status on A", "task status", "what is the task status"
+  const taskStatusMatch = normalized.match(/^what('s| is) the task status(\s+(on|for)\s*(container\s*)?([a-d]|main))?$/i)
+  if (taskStatusMatch) {
+    const target = taskStatusMatch[5]?.toLowerCase() as ContainerId | undefined
+    return { type: "task_status", containerId: target, rawText: text }
+  }
+  // Simpler form: "task status on A" or just "task status"
+  const simpleTaskStatus = normalized.match(/^task status(\s+(on|for)\s*(container\s*)?([a-d]|main))?$/i)
+  if (simpleTaskStatus) {
+    const target = simpleTaskStatus[4]?.toLowerCase() as ContainerId | undefined
+    return { type: "task_status", containerId: target, rawText: text }
+  }
+
+  // Wipe context / clear history
+  if (
+    normalized.includes("wipe context") ||
+    normalized.includes("zero context") ||
+    normalized.includes("clear context") ||
+    normalized.includes("wipe history") ||
+    normalized.includes("clear history") ||
+    normalized.includes("reset context") ||
+    normalized.includes("fresh start") ||
+    normalized === "start fresh" ||
+    normalized === "start over"
+  ) {
+    return { type: "wipe_context", rawText: text }
   }
 
   // Ignored commands

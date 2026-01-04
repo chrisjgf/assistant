@@ -1,6 +1,18 @@
 #!/bin/bash
 
-echo "Stopping services..."
+echo "Stopping all services..."
+
+# Kill Ollama screen session
+if screen -ls | grep -q "llm"; then
+    screen -S llm -X quit
+    echo "Ollama stopped"
+else
+    echo "Ollama not running"
+fi
+
+# Kill any remaining Ollama processes
+pkill -f "ollama serve" 2>/dev/null
+pkill -f "ollama run" 2>/dev/null
 
 # Kill backend screen session
 if screen -ls | grep -q "backend"; then
@@ -20,4 +32,4 @@ fi
 
 echo ""
 echo "Remaining screens:"
-screen -ls | grep -E "(backend|frontend)" || echo "None"
+screen -ls | grep -E "(llm|backend|frontend)" || echo "None"

@@ -45,3 +45,22 @@ class GeminiProvider(AIProvider):
         """Reset the chat history."""
         if self.model is not None:
             self.chat = self.model.start_chat(history=[])
+
+    def set_history(self, history: list[dict]) -> None:
+        """Set conversation history from external source."""
+        if self.model is None:
+            self._initialize()
+
+        # Convert to Gemini format: role must be 'user' or 'model'
+        gemini_history = []
+        for msg in history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            # Gemini uses 'model' instead of 'assistant'
+            gemini_role = "model" if role == "assistant" else "user"
+            gemini_history.append({
+                "role": gemini_role,
+                "parts": [content]
+            })
+
+        self.chat = self.model.start_chat(history=gemini_history)

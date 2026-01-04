@@ -50,7 +50,7 @@ export function createContainer(
     name: getContainerDisplayName(id),
     messages: options?.initialMessages || [],
     status: "idle",
-    activeAI: options?.inheritAI || "gemini",
+    activeAI: options?.inheritAI || "local",
     speakingId: null,
     claudeTask: null,
     error: null,
@@ -66,6 +66,7 @@ export type ContainerAction =
   | { type: "ADD_MESSAGE"; payload: { containerId: string; message: Message } }
   | { type: "UPDATE_MESSAGE"; payload: { containerId: string; messageId: string; text: string } }
   | { type: "REMOVE_MESSAGE"; payload: { containerId: string; messageId: string } }
+  | { type: "CLEAR_MESSAGES"; payload: { containerId: string } }
   | { type: "SET_STATUS"; payload: { containerId: string; status: ContainerStatus } }
   | { type: "SET_SPEAKING"; payload: { containerId: string; messageId: string | null } }
   | { type: "SET_ERROR"; payload: { containerId: string; error: string | null } }
@@ -152,6 +153,18 @@ function containerReducer(state: ContainerState, action: ContainerAction): Conta
       newContainers.set(action.payload.containerId, {
         ...container,
         messages: container.messages.filter((msg) => msg.id !== action.payload.messageId),
+      })
+      return { ...state, containers: newContainers }
+    }
+
+    case "CLEAR_MESSAGES": {
+      const container = state.containers.get(action.payload.containerId)
+      if (!container) return state
+      const newContainers = new Map(state.containers)
+      newContainers.set(action.payload.containerId, {
+        ...container,
+        messages: [],
+        projectContext: null,
       })
       return { ...state, containers: newContainers }
     }

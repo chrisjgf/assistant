@@ -25,8 +25,44 @@ declare global {
 
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:"
 const httpProtocol = window.location.protocol === "https:" ? "https:" : "http:"
-const WS_URL = `${wsProtocol}//${window.location.hostname}:8000/ws`
-export const API_URL = `${httpProtocol}//${window.location.hostname}:8000`
+const WS_URL = `${wsProtocol}//${window.location.hostname}:8001/ws`
+export const API_URL = `${httpProtocol}//${window.location.hostname}:8001`
+
+// Valid short words that should not be filtered as noise
+const VALID_SHORT_WORDS = new Set([
+  "a", "i", "k", "ok", "go", "no", "yes", "hi", "hey", "bye", "do", "so", "to", "on", "in", "up", "it", "is", "be", "we", "me", "my", "an", "or", "if", "at", "as", "by", "of"
+])
+
+/**
+ * Check if transcription is likely background noise or illegible speech.
+ * Conservative approach: only filter obvious garbage, allow valid short words.
+ */
+function isLikelyNoise(text: string): boolean {
+  const trimmed = text.trim().toLowerCase()
+
+  // Empty or whitespace only
+  if (!trimmed) return true
+
+  // Single character - allow if it's a valid short word
+  if (trimmed.length === 1) {
+    return !VALID_SHORT_WORDS.has(trimmed)
+  }
+
+  // Check if it's a valid short word
+  if (VALID_SHORT_WORDS.has(trimmed)) return false
+
+  // Mostly non-alphanumeric (> 50% symbols/punctuation)
+  const alphanumeric = trimmed.replace(/[^a-z0-9]/gi, "")
+  if (alphanumeric.length < trimmed.length * 0.5) return true
+
+  // Repeated character patterns (3+ same char in a row)
+  if (/(.)\1{2,}/.test(trimmed)) return true
+
+  // Very short with no vowels (likely noise like "mmm", "shh")
+  if (trimmed.length <= 3 && !/[aeiou]/i.test(trimmed)) return true
+
+  return false
+}
 
 export interface UseSharedVoiceReturn {
   globalStatus: Status
@@ -517,12 +553,33 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         }
 
         case "close_container": {
-          if (command.containerId && command.containerId !== "main" && currentContainers.has(command.containerId)) {
+          // Use specified container or current container
+          const targetContainer = command.containerId || containerId
+
+          // Can't close main
+          if (targetContainer === "main") {
             stopThinkingBeat()
             updatePendingMessage(containerId, command.rawText)
-            deleteContainer(command.containerId)
-            const messageId = addLocalResponse(containerId, `Closed container ${command.containerId.toUpperCase()}.`)
-            playTTS(containerId, `Closed container ${command.containerId.toUpperCase()}.`, messageId)
+            const messageId = addLocalResponse(containerId, "Cannot close the main container.")
+            playTTS(containerId, "Cannot close the main container.", messageId)
+            return true
+          }
+
+          // Can't close if only one container exists
+          if (currentContainers.size <= 1) {
+            stopThinkingBeat()
+            updatePendingMessage(containerId, command.rawText)
+            const messageId = addLocalResponse(containerId, "Cannot close the only container.")
+            playTTS(containerId, "Cannot close the only container.", messageId)
+            return true
+          }
+
+          if (currentContainers.has(targetContainer)) {
+            stopThinkingBeat()
+            updatePendingMessage(containerId, command.rawText)
+            deleteContainer(targetContainer)
+            const messageId = addLocalResponse(containerId, `Closed container ${targetContainer.toUpperCase()}.`)
+            playTTS(containerId, `Closed container ${targetContainer.toUpperCase()}.`, messageId)
             return true
           }
           return false
@@ -560,10 +617,57 @@ export function useSharedVoice(): UseSharedVoiceReturn {
             stopThinkingBeat()
             updatePendingMessage(containerId, command.rawText)
             dispatch({ type: "SET_AI", payload: { containerId, ai: command.targetAI } })
+
+            // Build conversation history to transfer to the new AI
+            const historyMessages = container?.messages
+              .filter((m) => m.text !== "...")
+              .slice(-20) // Last 20 messages for context
+              .map((m) => ({
+                role: m.role,
+                content: m.text,
+              })) || []
+
+            // Send history to backend for the new AI provider
+            if (historyMessages.length > 0) {
+              wsRef.current?.send(JSON.stringify({
+                type: "set_history",
+                containerId,
+                provider: command.targetAI,
+                history: historyMessages,
+              }))
+            }
+
             const aiNames: Record<string, string> = { gemini: "Gemini", claude: "Claude", local: "Local" }
             const aiName = aiNames[command.targetAI] || command.targetAI
             const messageId = addLocalResponse(containerId, `Switched to ${aiName}.`, command.targetAI)
             playTTS(containerId, `Switched to ${aiName}.`, messageId)
+            return true
+          }
+          return false
+        }
+
+        case "escalate_ai": {
+          if (command.targetAI) {
+            stopThinkingBeat()
+            updatePendingMessage(containerId, command.rawText)
+
+            // Create new container with current messages
+            const currentMessages = container?.messages || []
+            const newId = createContainer({
+              inheritAI: command.targetAI,
+              initialMessages: currentMessages,
+            })
+
+            if (newId) {
+              switchToContainer(newId)
+              const aiNames: Record<string, string> = { gemini: "Gemini", claude: "Claude", local: "Local" }
+              const aiName = aiNames[command.targetAI]
+              const messageId = addLocalResponse(newId, `Escalated to ${aiName} in container ${newId.toUpperCase()}.`, command.targetAI)
+              playTTS(newId, `Moved to ${aiName}.`, messageId)
+            } else {
+              const messageId = addLocalResponse(containerId, "No container slots available.", container?.activeAI)
+              playTTS(containerId, "No container slots available.", messageId)
+            }
             return true
           }
           return false
@@ -608,6 +712,33 @@ export function useSharedVoice(): UseSharedVoiceReturn {
             return true
           }
           return false
+        }
+
+        case "task_status": {
+          // Check task status on specified container or current container
+          const targetId = command.containerId || containerId
+          const targetContainer = containersRef.current.get(targetId)
+          stopThinkingBeat()
+          updatePendingMessage(containerId, command.rawText)
+
+          if (!targetContainer) {
+            const messageId = addLocalResponse(containerId, `Container ${targetId.toUpperCase()} does not exist.`)
+            playTTS(containerId, `Container ${targetId.toUpperCase()} does not exist.`, messageId)
+            return true
+          }
+
+          const containerName = targetId === "main" ? "Main" : targetId.toUpperCase()
+          const task = targetContainer.claudeTask
+
+          if (task) {
+            const shortPlan = task.plan.length > 100 ? task.plan.slice(0, 100) + "..." : task.plan
+            const messageId = addLocalResponse(containerId, `${containerName} has a pending task: ${shortPlan}`)
+            playTTS(containerId, `${containerName} has a pending task awaiting approval.`, messageId)
+          } else {
+            const messageId = addLocalResponse(containerId, `No active task on ${containerName}.`)
+            playTTS(containerId, `No active task on ${containerName}.`, messageId)
+          }
+          return true
         }
 
         case "plan_task": {
@@ -672,6 +803,24 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           return true
         }
 
+        case "wipe_context": {
+          stopThinkingBeat()
+          updatePendingMessage(containerId, null) // Remove the pending message
+
+          // Clear messages in UI
+          dispatch({ type: "CLEAR_MESSAGES", payload: { containerId } })
+
+          // Clear backend session for all providers
+          wsRef.current?.send(JSON.stringify({
+            type: "clear_context",
+            containerId,
+          }))
+
+          const messageId = addLocalResponse(containerId, "Context cleared. Starting fresh.", container?.activeAI)
+          playTTS(containerId, "Context cleared. Starting fresh.", messageId)
+          return true
+        }
+
         case "ignored": {
           stopThinkingBeat()
           updatePendingMessage(containerId, null)
@@ -719,6 +868,11 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
       if (data.type === "transcription") {
         const text = data.text
+
+        // Filter out background noise / illegible transcriptions
+        if (isLikelyNoise(text)) {
+          return
+        }
 
         // Check for voice commands first
         const command = parseVoiceCommand(text)

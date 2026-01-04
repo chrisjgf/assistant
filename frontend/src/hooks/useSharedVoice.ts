@@ -76,6 +76,7 @@ export interface UseSharedVoiceReturn {
   sendClaudeDeny: (containerId: string, taskId: string) => void
   saveChat: () => void
   playTTS: (containerId: string, text: string, messageId: string) => Promise<void>
+  sendText: (text: string) => void
 }
 
 export function useSharedVoice(): UseSharedVoiceReturn {
@@ -1155,6 +1156,99 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     // Do NOT close WebSocket or stop thinking beat - actions continue
   }, [])
 
+  // Send text message (simulates transcription flow for typed input)
+  const sendText = useCallback((text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+
+    // Ensure WebSocket is connected
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      connectWebSocket()
+    }
+
+    const containerId = activeContainerIdRef.current
+    const container = containersRef.current.get(containerId)
+
+    // Add user message to UI
+    const userMessageId = crypto.randomUUID()
+    dispatch({
+      type: "ADD_MESSAGE",
+      payload: {
+        containerId,
+        message: { id: userMessageId, role: "user", text: trimmed },
+      },
+    })
+
+    // Check for voice commands
+    const command = parseVoiceCommand(trimmed)
+    if (command) {
+      const handled = handleVoiceCommand(command, containerId)
+      if (handled) return
+    }
+
+    // Check for Claude direct address
+    const claudeAddress = parseClaudeDirectAddress(trimmed)
+    if (claudeAddress) {
+      startThinkingBeat()
+      dispatch({ type: "SET_AI", payload: { containerId, ai: "claude" } })
+      sendClaudeChat(containerId, claudeAddress.prompt)
+      return
+    }
+
+    // Handle Claude mode exit
+    if (container?.activeAI === "claude" && isClaudeExitCommand(trimmed)) {
+      dispatch({ type: "SET_AI", payload: { containerId, ai: "gemini" } })
+      const messageId = addLocalResponse(containerId, "Switched back to Gemini.", "gemini")
+      playTTS(containerId, "Switched back to Gemini.", messageId)
+      return
+    }
+
+    // Start processing
+    setGlobalStatus("processing")
+    dispatch({ type: "SET_STATUS", payload: { containerId, status: "processing" } })
+    startThinkingBeat()
+
+    // Route to appropriate AI
+    if (container?.activeAI === "local") {
+      wsRef.current?.send(JSON.stringify({
+        type: "local_request",
+        containerId,
+        text: trimmed,
+      }))
+    } else if (container?.activeAI === "claude") {
+      // Check if action request
+      const actionWords = ["create", "make", "write", "fix", "run", "delete", "update", "add", "remove", "install", "build", "edit", "change", "modify"]
+      const lowerText = trimmed.toLowerCase()
+      const isActionRequest = actionWords.some((word) => lowerText.includes(word))
+
+      if (isActionRequest) {
+        sendClaudePlanRequest(containerId, trimmed)
+      } else {
+        const context = container.messages
+          .slice(-6)
+          .map((m) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
+          .join("\n")
+        sendClaudeChat(containerId, trimmed, context)
+      }
+    } else {
+      // Gemini
+      wsRef.current?.send(JSON.stringify({
+        type: "gemini_request",
+        containerId,
+        text: trimmed,
+      }))
+    }
+  }, [
+    connectWebSocket,
+    dispatch,
+    handleVoiceCommand,
+    startThinkingBeat,
+    addLocalResponse,
+    playTTS,
+    sendClaudeChat,
+    sendClaudePlanRequest,
+  ])
+
   useEffect(() => {
     return () => {
       thinkingAudioRef.current?.stop()
@@ -1175,6 +1269,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     sendClaudeDeny,
     saveChat,
     playTTS,
+    sendText,
   }
 }
 

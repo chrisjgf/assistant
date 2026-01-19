@@ -20,12 +20,20 @@ export type VoiceCommandType =
   | "wipe_context"
   | "repeat_message"
   | "ignored"
+  // Task queue commands
+  | "cancel_queue_task"
+  | "queue_status"
+  | "clear_queue"
+  // Git worktree commands
+  | "switch_branch"
+  | "list_branches"
 
 export interface VoiceCommand {
   type: VoiceCommandType
   containerId?: ContainerId
   targetAI?: "gemini" | "claude" | "local"
   messageOffset?: number  // For repeat_message: 1 = last, 2 = second last, etc.
+  branch?: string  // For switch_branch command
   rawText: string
 }
 
@@ -255,6 +263,61 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
     const numericPhrase = repeatNumericMatch[2].toLowerCase()
     const offset = numericOrdinals[numericPhrase] || 1
     return { type: "repeat_message", messageOffset: offset, rawText: text }
+  }
+
+  // === Task Queue Commands ===
+
+  // Cancel queue task: "cancel task", "cancel the task"
+  if (
+    normalized === "cancel task" ||
+    normalized === "cancel the task" ||
+    normalized === "cancel current task" ||
+    normalized === "stop task"
+  ) {
+    return { type: "cancel_queue_task", rawText: text }
+  }
+
+  // Queue status: "queue status", "what's in the queue", "show queue"
+  if (
+    normalized === "queue status" ||
+    normalized === "show queue" ||
+    normalized === "whats in the queue" ||
+    normalized === "what is in the queue" ||
+    normalized === "check queue" ||
+    normalized === "how many tasks"
+  ) {
+    return { type: "queue_status", rawText: text }
+  }
+
+  // Clear queue: "clear queue", "empty queue", "clear the queue"
+  if (
+    normalized === "clear queue" ||
+    normalized === "clear the queue" ||
+    normalized === "empty queue" ||
+    normalized === "empty the queue" ||
+    normalized === "cancel all tasks"
+  ) {
+    return { type: "clear_queue", rawText: text }
+  }
+
+  // === Git Worktree Commands ===
+
+  // Switch branch: "switch to branch main", "use branch feature-x"
+  const branchSwitchMatch = normalized.match(/^(switch to|use|checkout)\s+branch\s+(.+)$/i)
+  if (branchSwitchMatch) {
+    const branch = branchSwitchMatch[2].trim()
+    return { type: "switch_branch", branch, rawText: text }
+  }
+
+  // List branches: "list branches", "what branches", "show branches"
+  if (
+    normalized === "list branches" ||
+    normalized === "show branches" ||
+    normalized === "what branches" ||
+    normalized === "available branches" ||
+    normalized.includes("what branches are available")
+  ) {
+    return { type: "list_branches", rawText: text }
   }
 
   // Ignored commands

@@ -6,3 +6,4 @@ venv/
 certs/
 backend/sample/
 *.log
+.claude/

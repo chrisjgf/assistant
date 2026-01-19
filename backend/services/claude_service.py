@@ -1,10 +1,12 @@
 import asyncio
 import os
 import uuid
-from typing import Dict, Optional, AsyncGenerator
+from typing import Dict, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+from services.git_service import get_worktree_path
 
 
 class TaskStatus(Enum):
@@ -21,6 +23,7 @@ class ClaudeTask:
     id: str
     prompt: str
     container_id: str = "main"
+    branch: Optional[str] = None  # Git branch for worktree support
     plan: Optional[str] = None
     status: TaskStatus = TaskStatus.PLANNING
     result: Optional[str] = None
@@ -30,12 +33,19 @@ class ClaudeTask:
 _tasks: Dict[str, ClaudeTask] = {}
 
 
-def get_work_dir() -> str:
-    """Get the working directory for Claude CLI."""
-    return os.getenv("CLAUDE_WORK_DIR", str(Path.home() / "dev"))
+def get_work_dir(branch: Optional[str] = None) -> str:
+    """Get the working directory for Claude CLI.
+
+    Args:
+        branch: Optional git branch to use worktree for
+
+    Returns:
+        Path to working directory (worktree if branch specified, else default)
+    """
+    return str(get_worktree_path(branch))
 
 
-async def chat_with_claude(user_message: str, conversation_context: str = "") -> str:
+async def chat_with_claude(user_message: str, conversation_context: str = "", branch: Optional[str] = None) -> str:
     """Have a brief conversational exchange with Claude CLI.
 
     Uses --allowedTools "" to prevent tool use and get fast responses.
@@ -44,6 +54,7 @@ async def chat_with_claude(user_message: str, conversation_context: str = "") ->
     Args:
         user_message: The user's current message
         conversation_context: Optional previous conversation for context
+        branch: Optional git branch to use worktree for
 
     Returns:
         Claude's response text
@@ -60,7 +71,7 @@ Keep responses brief (2-3 sentences).
             "--allowedTools", "",  # No tools = fast response
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=get_work_dir()
+            cwd=get_work_dir(branch)
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(),
@@ -81,8 +92,15 @@ Keep responses brief (2-3 sentences).
         return f"Sorry, an error occurred: {str(e)}"
 
 
-async def collect_context() -> str:
-    """Run Claude with Read/Glob to explore and summarize the project."""
+async def collect_context(branch: Optional[str] = None) -> str:
+    """Run Claude with Read/Glob to explore and summarize the project.
+
+    Args:
+        branch: Optional git branch to use worktree for
+
+    Returns:
+        Project context summary
+    """
     prompt = """Explore this project and create a brief summary including:
 - What the project does (1-2 sentences)
 - Key files and their purposes
@@ -97,7 +115,7 @@ Keep it concise (under 500 words) as this will be included in future prompts."""
             "--print",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=get_work_dir()
+            cwd=get_work_dir(branch)
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(),
@@ -115,13 +133,23 @@ Keep it concise (under 500 words) as this will be included in future prompts."""
         return f"Error: {str(e)}"
 
 
-async def start_task(prompt: str, container_id: str = "main") -> ClaudeTask:
-    """Start Claude in planning mode to get task plan."""
+async def start_task(prompt: str, container_id: str = "main", branch: Optional[str] = None) -> ClaudeTask:
+    """Start Claude in planning mode to get task plan.
+
+    Args:
+        prompt: The task prompt
+        container_id: Container ID
+        branch: Optional git branch to use worktree for
+
+    Returns:
+        ClaudeTask with plan or error
+    """
     task_id = str(uuid.uuid4())[:8]
     task = ClaudeTask(
         id=task_id,
         prompt=prompt,
         container_id=container_id,
+        branch=branch,
         status=TaskStatus.PLANNING,
     )
     _tasks[task_id] = task
@@ -134,7 +162,7 @@ async def start_task(prompt: str, container_id: str = "main") -> ClaudeTask:
             "--print",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=get_work_dir()
+            cwd=get_work_dir(branch)
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(),
@@ -186,12 +214,12 @@ async def confirm_task(task_id: str, websocket) -> None:
     task.status = TaskStatus.RUNNING
 
     try:
-        # Run Claude with full permissions
+        # Run Claude with full permissions in the appropriate worktree
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", task.prompt, "--dangerously-skip-permissions",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=get_work_dir()
+            cwd=get_work_dir(task.branch)
         )
 
         # Wait for completion (no timeout - tasks can be long)

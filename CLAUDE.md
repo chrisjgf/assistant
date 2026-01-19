@@ -19,22 +19,32 @@ Development guidance for Claude Code when working in this repository.
 
 ```
 backend/
-  main.py                    # FastAPI app, WebSocket /ws, REST /tts
+  main.py                    # FastAPI app, WebSocket /ws, REST endpoints
   services/
     whisper_service.py       # STT: faster-whisper large-v3
     tts_service.py           # TTS: Chatterbox with voice cloning
     claude_service.py        # Claude CLI wrapper (chat + planning modes)
+    session_service.py       # Session persistence (JSON files)
+    task_queue.py            # Per-container FIFO task queues
+    git_service.py           # Git worktree management
     ai/
       base.py                # AIProvider abstract base
       gemini.py              # Google Gemini
       local.py               # Ollama + DuckDuckGo search
+  data/
+    sessions/                # Session JSON files (auto-created)
 
 frontend/src/
-  context/ContainerContext.tsx   # State: 5 containers (main, a-d)
+  context/ContainerContext.tsx   # State: 5 containers (main, a-d), session integration
   hooks/
     useSharedVoice.ts            # Core: VAD, WebSocket, TTS, commands
+    useSession.ts                # Session persistence management
+    useTaskQueue.ts              # Task queue management
+    useGitWorktree.ts            # Git worktree management
     useVoiceChat.ts              # Legacy hook
-  utils/voiceCommands.ts         # Command parsing
+  utils/
+    voiceCommands.ts             # Command parsing
+    sessionStorage.ts            # localStorage wrapper
   components/
     ChatView.tsx                 # Messages with TTS playback
     ContainerTabs.tsx            # Tab navigation
@@ -58,6 +68,27 @@ class AIProvider:
 ```
 
 **Voice Command Flow** - `voiceCommands.ts` parses transcriptions before AI routing. Commands return `VoiceCommand` objects handled by `useSharedVoice.ts`.
+
+## New Features
+
+### Session Resume
+Conversations persist automatically via localStorage + backend JSON files:
+- Sessions have UUID tokens stored in `backend/data/sessions/`
+- Auto-save triggers on state changes (debounced)
+- Session recovery on page load
+
+### Task Queue
+Per-container FIFO task queues with cancellation:
+- Voice commands: "cancel task", "queue status", "clear queue"
+- WebSocket: `queue_task`, `cancel_task`, `queue_status`, `clear_queue`
+- Async locks ensure one task per container at a time
+
+### Git Worktree Support
+Multi-branch work with per-container branch targeting:
+- Voice commands: "switch to branch X", "list branches"
+- Worktrees created in `../.worktrees/{branch}/`
+- Claude operations use branch-specific directories
+- REST: `GET /git/branches`, `POST /git/worktree`, `DELETE /git/worktree/{branch}`
 
 ## Environment
 

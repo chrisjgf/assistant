@@ -25,6 +25,9 @@ from services.whisper_service import transcribe, get_model as get_whisper_model
 from services.tts_service import synthesize, get_model as get_tts_model, is_available as tts_available, split_into_sentences
 from services.ai import get_ai_for_container, clear_all_sessions, clear_container_session
 from services.claude_service import start_task, confirm_task, deny_task, chat_with_claude, collect_context
+from services import session_service
+from services import task_queue
+from services import git_service
 
 app = FastAPI()
 
@@ -243,6 +246,146 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Clear all AI sessions for this container
                     clear_container_session(container_id)
 
+                # === Task Queue Messages ===
+
+                elif msg_type == "queue_task":
+                    # Add a task to the container's queue
+                    container_id = data.get("containerId", "main")
+                    task_type = data.get("taskType", "claude_request")
+                    payload = data.get("payload", {})
+                    print(f"Queueing {task_type} for {container_id}")
+
+                    queued = await task_queue.queue_task(container_id, task_type, payload)
+
+                    await websocket.send_json({
+                        "type": "task_queued",
+                        "containerId": container_id,
+                        "taskId": queued.id,
+                        "position": task_queue.get_queue_status(container_id)["queued"],
+                    })
+
+                    # Start processor if not running (handler defined below)
+                    async def process_queued_task(task):
+                        try:
+                            if task.task_type == "claude_request":
+                                claude_task = await start_task(task.payload.get("text", ""), container_id)
+                                if claude_task.status.value == "failed":
+                                    task.error = claude_task.error
+                                    raise Exception(claude_task.error)
+                                task.result = claude_task.plan
+                                await websocket.send_json({
+                                    "type": "queued_task_complete",
+                                    "containerId": task.container_id,
+                                    "taskId": task.id,
+                                    "result": task.result,
+                                })
+                            elif task.task_type == "gemini_request":
+                                ai = get_ai_for_container(task.container_id)
+                                response = ai.get_response(task.payload.get("text", ""))
+                                task.result = response
+                                await websocket.send_json({
+                                    "type": "queued_task_complete",
+                                    "containerId": task.container_id,
+                                    "taskId": task.id,
+                                    "result": response,
+                                })
+                            elif task.task_type == "local_request":
+                                ai = get_ai_for_container(task.container_id, "local")
+                                response = ai.get_response(task.payload.get("text", ""))
+                                task.result = response
+                                await websocket.send_json({
+                                    "type": "queued_task_complete",
+                                    "containerId": task.container_id,
+                                    "taskId": task.id,
+                                    "result": response,
+                                })
+                        except Exception as e:
+                            await websocket.send_json({
+                                "type": "queued_task_failed",
+                                "containerId": task.container_id,
+                                "taskId": task.id,
+                                "error": str(e),
+                            })
+
+                    task_queue.start_processor(container_id, process_queued_task)
+
+                elif msg_type == "cancel_task":
+                    # Cancel a specific task by ID
+                    task_id = data.get("taskId")
+                    container_id = data.get("containerId", "main")
+                    print(f"Cancelling task {task_id}")
+
+                    cancelled = task_queue.cancel_task(task_id)
+
+                    await websocket.send_json({
+                        "type": "task_cancelled",
+                        "containerId": container_id,
+                        "taskId": task_id,
+                        "success": cancelled,
+                    })
+
+                elif msg_type == "queue_status":
+                    # Get queue status for a container
+                    container_id = data.get("containerId", "main")
+                    status = task_queue.get_queue_status(container_id)
+
+                    await websocket.send_json({
+                        "type": "queue_status_response",
+                        "containerId": container_id,
+                        "status": status,
+                    })
+
+                elif msg_type == "clear_queue":
+                    # Clear all pending tasks for a container
+                    container_id = data.get("containerId", "main")
+                    print(f"Clearing queue for {container_id}")
+
+                    count = task_queue.clear_queue(container_id)
+
+                    await websocket.send_json({
+                        "type": "queue_cleared",
+                        "containerId": container_id,
+                        "cancelledCount": count,
+                    })
+
+                # === Git Worktree Messages ===
+
+                elif msg_type == "switch_branch":
+                    # Switch container to a different branch (create worktree if needed)
+                    container_id = data.get("containerId", "main")
+                    branch = data.get("branch", "")
+                    print(f"Switching {container_id} to branch {branch}")
+
+                    # Create worktree if it doesn't exist
+                    result = await git_service.create_worktree(branch)
+
+                    if result.get("success"):
+                        await websocket.send_json({
+                            "type": "branch_switched",
+                            "containerId": container_id,
+                            "branch": branch,
+                            "worktreePath": result.get("path"),
+                            "created": result.get("created", False),
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "branch_switch_failed",
+                            "containerId": container_id,
+                            "branch": branch,
+                            "error": result.get("error"),
+                        })
+
+                elif msg_type == "list_branches":
+                    # List available branches
+                    container_id = data.get("containerId", "main")
+                    branches = await git_service.list_branches()
+
+                    await websocket.send_json({
+                        "type": "branches_list",
+                        "containerId": container_id,
+                        "branches": branches,
+                    })
+
     except WebSocketDisconnect:
         print("WebSocket disconnected")
         # Clear all AI sessions on disconnect
@@ -296,6 +439,92 @@ async def text_to_speech_chunked(request: TTSRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# === Session Endpoints ===
+
+class SessionUpdateRequest(BaseModel):
+    containers: dict
+
+
+@app.post("/session")
+async def create_session():
+    """Create a new session and return its UUID."""
+    session = session_service.create_session()
+    return session
+
+
+@app.get("/session/{session_id}")
+async def get_session(session_id: str):
+    """Retrieve a session by ID."""
+    session = session_service.get_session(session_id)
+    if session is None:
+        return Response(content="Session not found", status_code=404)
+    return session
+
+
+@app.put("/session/{session_id}")
+async def update_session(session_id: str, request: SessionUpdateRequest):
+    """Update a session's container data."""
+    session = session_service.update_session(session_id, request.containers)
+    if session is None:
+        return Response(content="Session not found", status_code=404)
+    return session
+
+
+@app.delete("/session/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a session."""
+    deleted = session_service.delete_session(session_id)
+    if not deleted:
+        return Response(content="Session not found", status_code=404)
+    return {"status": "deleted"}
+
+
+@app.get("/sessions")
+async def list_sessions(limit: int = 50):
+    """List recent sessions."""
+    sessions = session_service.list_sessions(limit)
+    return {"sessions": sessions}
+
+
+# === Git Worktree Endpoints ===
+
+@app.get("/git/branches")
+async def get_branches():
+    """List all branches with worktree info."""
+    branches = await git_service.list_branches()
+    return {"branches": branches}
+
+
+class WorktreeRequest(BaseModel):
+    branch: str
+
+
+@app.post("/git/worktree")
+async def create_worktree(request: WorktreeRequest):
+    """Create a worktree for a branch."""
+    result = await git_service.create_worktree(request.branch)
+    if not result.get("success"):
+        return Response(content=result.get("error", "Unknown error"), status_code=400)
+    return result
+
+
+@app.delete("/git/worktree/{branch}")
+async def delete_worktree(branch: str):
+    """Remove a worktree."""
+    result = await git_service.remove_worktree(branch)
+    if not result.get("success"):
+        return Response(content=result.get("error", "Unknown error"), status_code=400)
+    return result
+
+
+@app.get("/git/worktrees")
+async def get_worktrees():
+    """List all worktrees."""
+    worktrees = await git_service.list_worktrees()
+    return {"worktrees": worktrees}
+
 
 if __name__ == "__main__":
     import uvicorn

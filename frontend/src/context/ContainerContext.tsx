@@ -1,4 +1,6 @@
-import React, { createContext, useReducer, useCallback, useMemo } from "react"
+import React, { createContext, useReducer, useCallback, useMemo, useEffect, useRef } from "react"
+import { useSession } from "../hooks/useSession"
+import type { SessionContainer } from "../utils/sessionStorage"
 
 // Types inlined to avoid import issues
 export type Status = "idle" | "listening" | "processing" | "speaking"
@@ -27,6 +29,7 @@ export interface Container {
   error: string | null
   pendingTTS: { text: string; messageId: string } | null
   projectContext: string | null
+  branch: string | null  // Git branch for worktree support
 }
 
 export const MAX_CONTAINERS = 5
@@ -56,6 +59,7 @@ export function createContainer(
     error: null,
     pendingTTS: null,
     projectContext: null,
+    branch: null,
   }
 }
 
@@ -74,6 +78,8 @@ export type ContainerAction =
   | { type: "SET_CLAUDE_TASK"; payload: { containerId: string; task: ClaudeTask | null } }
   | { type: "SET_PENDING_TTS"; payload: { containerId: string; tts: { text: string; messageId: string } | null } }
   | { type: "SET_PROJECT_CONTEXT"; payload: { containerId: string; context: string } }
+  | { type: "SET_BRANCH"; payload: { containerId: string; branch: string | null } }
+  | { type: "RESTORE_SESSION"; payload: { containers: Record<string, SessionContainer> } }
 
 export interface ContainerState {
   containers: Map<string, Container>
@@ -246,6 +252,47 @@ function containerReducer(state: ContainerState, action: ContainerAction): Conta
       return { ...state, containers: newContainers }
     }
 
+    case "SET_BRANCH": {
+      const container = state.containers.get(action.payload.containerId)
+      if (!container) return state
+      const newContainers = new Map(state.containers)
+      newContainers.set(action.payload.containerId, {
+        ...container,
+        branch: action.payload.branch,
+      })
+      return { ...state, containers: newContainers }
+    }
+
+    case "RESTORE_SESSION": {
+      const newContainers = new Map<string, Container>()
+
+      // Always ensure main container exists
+      const mainData = action.payload.containers["main"]
+      newContainers.set("main", {
+        ...createContainer("main"),
+        messages: mainData?.messages || [],
+        activeAI: mainData?.activeAI || "local",
+        projectContext: mainData?.projectContext || null,
+        branch: mainData?.branch || null,
+      })
+
+      // Restore other containers
+      for (const [id, data] of Object.entries(action.payload.containers)) {
+        if (id === "main") continue
+        if (!CONTAINER_NAMES.includes(id as ContainerId)) continue
+
+        newContainers.set(id, {
+          ...createContainer(id as ContainerId),
+          messages: data.messages || [],
+          activeAI: data.activeAI || "local",
+          projectContext: data.projectContext || null,
+          branch: data.branch || null,
+        })
+      }
+
+      return { ...state, containers: newContainers }
+    }
+
     default:
       return state
   }
@@ -270,12 +317,53 @@ export interface ContainerContextValue {
   switchToContainer: (id: string) => void
   sendToContainer: (containerId: string, context: Message[], prompt: string) => void
   getNextAvailableContainerId: () => ContainerId | null
+  // Session management
+  sessionId: string | null
+  isSessionLoading: boolean
+  clearSession: () => void
 }
 
 export const ContainerContext = createContext<ContainerContextValue | null>(null)
 
 export function ContainerProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(containerReducer, null, createInitialState)
+  const { sessionId, isLoading: isSessionLoading, loadSession, saveSession, clearSession } = useSession()
+  const sessionLoadedRef = useRef(false)
+  const lastSaveRef = useRef<string>("")
+
+  // Load session on mount
+  useEffect(() => {
+    if (sessionLoadedRef.current) return
+    sessionLoadedRef.current = true
+
+    loadSession().then((session) => {
+      if (session && Object.keys(session.containers).length > 0) {
+        dispatch({ type: "RESTORE_SESSION", payload: { containers: session.containers } })
+      }
+    })
+  }, [loadSession])
+
+  // Auto-save on state changes (debounced in useSession)
+  useEffect(() => {
+    // Skip if session not loaded yet
+    if (!sessionLoadedRef.current) return
+
+    // Create a hash of the current state to avoid saving unchanged data
+    const stateHash = JSON.stringify(
+      Array.from(state.containers.entries()).map(([id, c]) => ({
+        id,
+        messages: c.messages.length,
+        ai: c.activeAI,
+        context: c.projectContext?.length || 0,
+        branch: c.branch,
+      }))
+    )
+
+    if (stateHash === lastSaveRef.current) return
+    lastSaveRef.current = stateHash
+
+    saveSession(state.containers)
+  }, [state.containers, saveSession])
 
   const getNextAvailableContainerId = useCallback((): ContainerId | null => {
     for (const name of CONTAINER_NAMES) {
@@ -361,8 +449,11 @@ export function ContainerProvider({ children }: { children: React.ReactNode }) {
       switchToContainer,
       sendToContainer,
       getNextAvailableContainerId,
+      sessionId,
+      isSessionLoading,
+      clearSession,
     }),
-    [state, activeContainer, createContainerFn, deleteContainer, switchToContainer, sendToContainer, getNextAvailableContainerId]
+    [state, activeContainer, createContainerFn, deleteContainer, switchToContainer, sendToContainer, getNextAvailableContainerId, sessionId, isSessionLoading, clearSession]
   )
 
   return <ContainerContext.Provider value={value}>{children}</ContainerContext.Provider>

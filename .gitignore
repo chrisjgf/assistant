@@ -5,3 +5,4 @@ models/
 venv/
 certs/
 backend/sample/
+*.log

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react"
 
 const httpProtocol = window.location.protocol === "https:" ? "https:" : "http:"
-const API_URL = `${httpProtocol}//${window.location.hostname}:8000`
+const API_URL = `${httpProtocol}//${window.location.hostname}:8001`
 
 export function TTSPage() {
   const [text, setText] = useState("")

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'voice-assistant-v1';
+const CACHE_NAME = 'voice-assistant-v2';
 
 // Assets to cache for offline use
 const PRECACHE_ASSETS = [
@@ -51,7 +51,9 @@ self.addEventListener('fetch', (event) => {
       })
       .catch(() => {
         // Fallback to cache if network fails
-        return caches.match(event.request);
+        return caches.match(event.request).then((cachedResponse) => {
+          return cachedResponse || new Response('Network error', { status: 503, statusText: 'Service Unavailable' });
+        });
       })
   );
 });

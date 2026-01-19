@@ -8,7 +8,7 @@ VLLM_ENV="$HOME/dev/vllm-env"
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
-# Start Ollama server (qwen2.5:32b on A6000)
+# Start Ollama server (qwen3-coder:30b on A6000)
 start_llm() {
     echo "Starting Ollama server..."
     screen -dmS llm bash -c "
@@ -18,8 +18,8 @@ start_llm() {
     echo "Waiting for Ollama to start..."
     sleep 3
     # Preload the model to keep it in memory
-    echo "Preloading qwen2.5:32b model..."
-    CUDA_VISIBLE_DEVICES=1 ollama run qwen2.5:32b --keepalive 24h "" >/dev/null 2>&1 &
+    echo "Preloading qwen3-coder:30b model..."
+    CUDA_VISIBLE_DEVICES=1 ollama run qwen3-coder:30b --keepalive 24h "" >/dev/null 2>&1 &
     echo "Ollama started in screen 'llm' (port 11434)"
 }
 

@@ -64,7 +64,7 @@ Keep responses brief (2-3 sentences).
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(),
-            timeout=30.0  # 30s for chat responses
+            timeout=90.0  # 90s for chat responses
         )
 
         if proc.returncode != 0:
@@ -138,7 +138,7 @@ async def start_task(prompt: str, container_id: str = "main") -> ClaudeTask:
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(),
-            timeout=30.0  # 30 second timeout
+            timeout=90.0  # 90 second timeout
         )
 
         if proc.returncode != 0:

@@ -64,6 +64,26 @@ function isLikelyNoise(text: string): boolean {
   return false
 }
 
+/**
+ * Strip markdown formatting from text before sending to TTS.
+ * Preserves readable text while removing formatting syntax.
+ */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " code block ")  // Code blocks
+    .replace(/`([^`]+)`/g, "$1")                  // Inline code
+    .replace(/\*\*([^*]+)\*\*/g, "$1")            // Bold
+    .replace(/\*([^*]+)\*/g, "$1")                // Italic
+    .replace(/__([^_]+)__/g, "$1")                // Bold alt
+    .replace(/_([^_]+)_/g, "$1")                  // Italic alt
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")      // Links
+    .replace(/^#+\s+/gm, "")                      // Headers
+    .replace(/^[-*+]\s+/gm, "")                   // List items
+    .replace(/^>\s+/gm, "")                       // Blockquotes
+    .replace(/^---+$/gm, "")                      // Horizontal rules
+    .trim()
+}
+
 export interface UseSharedVoiceReturn {
   globalStatus: Status
   isConnected: boolean
@@ -106,6 +126,23 @@ export function useSharedVoice(): UseSharedVoiceReturn {
   const aiDisabledRef = useRef(false)
   const activeContainerIdRef = useRef(activeContainerId)
   const containersRef = useRef(containers)
+
+  // Message buffering - collect speech segments before processing
+  const speechBufferRef = useRef<Float32Array[]>([])
+  const bufferTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const BUFFER_DELAY_MS = 800 // Wait 800ms after last speech segment before processing
+
+  // Helper to concatenate multiple audio buffers into one
+  const concatenateAudioBuffers = useCallback((buffers: Float32Array[]): Float32Array => {
+    const totalLength = buffers.reduce((acc, buf) => acc + buf.length, 0)
+    const result = new Float32Array(totalLength)
+    let offset = 0
+    for (const buf of buffers) {
+      result.set(buf, offset)
+      offset += buf.length
+    }
+    return result
+  }, [])
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -220,7 +257,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         const response = await fetch(`${API_URL}/tts/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text: stripMarkdown(text) }),
         })
 
         if (thisRequestId !== ttsRequestIdRef.current) return
@@ -822,6 +859,43 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           return true
         }
 
+        case "repeat_message": {
+          stopThinkingBeat()
+          updatePendingMessage(containerId, command.rawText)
+
+          // Get assistant messages from history (excluding pending "...")
+          const assistantMessages = container?.messages.filter(
+            (msg) => msg.role === "assistant" && msg.text !== "..."
+          ) || []
+
+          if (assistantMessages.length === 0) {
+            const messageId = addLocalResponse(containerId, "I haven't said anything yet.", container?.activeAI)
+            playTTS(containerId, "I haven't said anything yet.", messageId)
+            return true
+          }
+
+          // Get the requested message by offset (1 = last, 2 = second last, etc.)
+          const offset = command.messageOffset || 1
+          const targetIndex = assistantMessages.length - offset
+
+          if (targetIndex < 0) {
+            const available = assistantMessages.length
+            const messageId = addLocalResponse(
+              containerId,
+              `I only have ${available} message${available === 1 ? "" : "s"} in this conversation.`,
+              container?.activeAI
+            )
+            playTTS(containerId, `I only have ${available} message${available === 1 ? "" : "s"} in this conversation.`, messageId)
+            return true
+          }
+
+          const targetMessage = assistantMessages[targetIndex]
+
+          // Replay the TTS for the target message
+          playTTS(containerId, targetMessage.text, targetMessage.id)
+          return true
+        }
+
         case "ignored": {
           stopThinkingBeat()
           updatePendingMessage(containerId, null)
@@ -1084,6 +1158,28 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     sendClaudeChat,
   ])
 
+  // Process buffered speech - called after buffer delay
+  const processBufferedSpeech = useCallback(() => {
+    if (speechBufferRef.current.length === 0) return
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      console.log("WebSocket not ready, clearing buffer")
+      speechBufferRef.current = []
+      return
+    }
+
+    const containerId = activeContainerIdRef.current
+    console.log(`Processing ${speechBufferRef.current.length} buffered speech segment(s)`)
+
+    // Concatenate all buffered audio
+    const combinedAudio = concatenateAudioBuffers(speechBufferRef.current)
+    speechBufferRef.current = []
+
+    // Encode and send audio with container ID
+    const wavBuffer = encodeWAV(combinedAudio, 16000)
+    wsRef.current?.send(JSON.stringify({ type: "audio_meta", containerId }))
+    wsRef.current?.send(wavBuffer)
+  }, [concatenateAudioBuffers])
+
   const start = useCallback(async () => {
     if (!window.vad) {
       setError("VAD not loaded. Please refresh the page.")
@@ -1100,35 +1196,46 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         onSpeechStart: () => {
           console.log("Speech started")
           stopAudio()
+
+          // Cancel pending buffer timeout when new speech starts
+          if (bufferTimeoutRef.current) {
+            clearTimeout(bufferTimeoutRef.current)
+            bufferTimeoutRef.current = null
+          }
         },
         onSpeechEnd: (audio) => {
-          console.log("Speech ended, sending audio...")
-          if (wsRef.current?.readyState !== WebSocket.OPEN) {
-            console.log("WebSocket not ready")
-            return
-          }
+          console.log("Speech ended, buffering...")
 
           const containerId = activeContainerIdRef.current
+          const isFirstSegment = speechBufferRef.current.length === 0
 
-          // Add pending user message
-          dispatch({
-            type: "ADD_MESSAGE",
-            payload: {
-              containerId,
-              message: { id: crypto.randomUUID(), role: "user", text: "..." },
-            },
-          })
+          // Add audio to buffer
+          speechBufferRef.current.push(audio)
 
-          setGlobalStatus("processing")
-          dispatch({ type: "SET_STATUS", payload: { containerId, status: "processing" } })
-          startThinkingBeat()
+          // Only add pending message and start thinking beat on first segment
+          if (isFirstSegment) {
+            dispatch({
+              type: "ADD_MESSAGE",
+              payload: {
+                containerId,
+                message: { id: crypto.randomUUID(), role: "user", text: "..." },
+              },
+            })
+            setGlobalStatus("processing")
+            dispatch({ type: "SET_STATUS", payload: { containerId, status: "processing" } })
+            startThinkingBeat()
+          }
 
-          // Encode and send audio with container ID
-          const wavBuffer = encodeWAV(audio, 16000)
+          // Clear any existing timeout
+          if (bufferTimeoutRef.current) {
+            clearTimeout(bufferTimeoutRef.current)
+          }
 
-          // Send container ID as JSON first, then audio
-          wsRef.current?.send(JSON.stringify({ type: "audio_meta", containerId }))
-          wsRef.current?.send(wavBuffer)
+          // Set new timeout - process after delay if no more speech
+          bufferTimeoutRef.current = setTimeout(() => {
+            bufferTimeoutRef.current = null
+            processBufferedSpeech()
+          }, BUFFER_DELAY_MS)
         },
         onVADMisfire: () => {
           console.log("VAD misfire (too short)")
@@ -1144,7 +1251,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       setError(`VAD error: ${err instanceof Error ? err.message : String(err)}`)
       setIsLoading(false)
     }
-  }, [connectWebSocket, startThinkingBeat, stopAudio, dispatch])
+  }, [connectWebSocket, startThinkingBeat, stopAudio, dispatch, processBufferedSpeech])
 
   const stop = useCallback(() => {
     console.log("Stopping voice chat (listening only)...")
@@ -1152,9 +1259,17 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     vadRef.current?.pause()
     vadRef.current?.destroy()
     vadRef.current = null
+
+    // Clear any pending buffer timeout and process remaining speech
+    if (bufferTimeoutRef.current) {
+      clearTimeout(bufferTimeoutRef.current)
+      bufferTimeoutRef.current = null
+      processBufferedSpeech()
+    }
+
     setGlobalStatus("idle")
     // Do NOT close WebSocket or stop thinking beat - actions continue
-  }, [])
+  }, [processBufferedSpeech])
 
   // Send text message (simulates transcription flow for typed input)
   const sendText = useCallback((text: string) => {
@@ -1254,6 +1369,9 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       thinkingAudioRef.current?.stop()
       wsRef.current?.close()
       vadRef.current?.destroy()
+      if (bufferTimeoutRef.current) {
+        clearTimeout(bufferTimeoutRef.current)
+      }
     }
   }, [])
 

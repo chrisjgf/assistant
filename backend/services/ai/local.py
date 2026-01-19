@@ -18,7 +18,8 @@ SYSTEM_PROMPT = """You are a voice assistant engaged in natural spoken conversat
 You have access to a web_search tool. Use it when you need current information, facts you're unsure about, or when the user asks about recent events, news, weather, or anything time-sensitive."""
 
 DEFAULT_LOCAL_LLM_URL = "http://localhost:11434"
-MODEL_NAME = "qwen2.5:32b"
+MODEL_NAME = "qwen3-coder-256k"
+CONTEXT_SIZE = 262144  # 256k context
 
 TOOLS = [
     {
@@ -73,6 +74,9 @@ class LocalProvider(AIProvider):
             "model": self.model,
             "messages": messages,
             "stream": False,
+            "options": {
+                "num_ctx": CONTEXT_SIZE,
+            },
         }
         if use_tools:
             payload["tools"] = TOOLS

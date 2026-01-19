@@ -29,8 +29,8 @@ declare global {
 
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const httpProtocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-const WS_URL = `${wsProtocol}//${window.location.hostname}:8000/ws`
-const API_URL = `${httpProtocol}//${window.location.hostname}:8000`
+const WS_URL = `${wsProtocol}//${window.location.hostname}:8001/ws`
+const API_URL = `${httpProtocol}//${window.location.hostname}:8001`
 
 export function useVoiceChat() {
   const [status, setStatus] = useState<Status>("idle")

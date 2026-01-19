@@ -1,67 +1,69 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Development guidance for Claude Code when working in this repository.
 
-## Project Overview
+## Quick Reference
 
-Voice-controlled AI assistant with a React frontend and Python FastAPI backend. Users can speak to either Gemini (for quick conversational responses) or Claude (for code tasks with planning/approval flow). Supports multiple concurrent chat "containers" and text-to-speech output.
-
-## Development Commands
-
-### Backend (Python/FastAPI)
 ```bash
-cd backend
-source venv/bin/activate
-python main.py  # Runs on https://0.0.0.0:8000 with SSL
+# Start everything
+./start.sh
+
+# Or individually:
+./start.sh backend    # Port 8001 (HTTPS)
+./start.sh frontend   # Port 5173
+./start.sh llm        # Ollama on 11434
+./start.sh status     # Check service health
 ```
 
-### Frontend (React/Vite)
-```bash
-cd frontend
-npm install
-npm run dev     # Dev server with HMR
-npm run build   # Build: tsc -b && vite build
-npm run lint    # ESLint
+## Project Structure
+
+```
+backend/
+  main.py                    # FastAPI app, WebSocket /ws, REST /tts
+  services/
+    whisper_service.py       # STT: faster-whisper large-v3
+    tts_service.py           # TTS: Chatterbox with voice cloning
+    claude_service.py        # Claude CLI wrapper (chat + planning modes)
+    ai/
+      base.py                # AIProvider abstract base
+      gemini.py              # Google Gemini
+      local.py               # Ollama + DuckDuckGo search
+
+frontend/src/
+  context/ContainerContext.tsx   # State: 5 containers (main, a-d)
+  hooks/
+    useSharedVoice.ts            # Core: VAD, WebSocket, TTS, commands
+    useVoiceChat.ts              # Legacy hook
+  utils/voiceCommands.ts         # Command parsing
+  components/
+    ChatView.tsx                 # Messages with TTS playback
+    ContainerTabs.tsx            # Tab navigation
+    StatusIndicator.tsx          # Status display
 ```
 
-### Environment Setup
-Copy `.env.example` to `.env` and set:
-- `GEMINI_API_KEY` - Required for Gemini AI
-- `CUDA_DEVICE` - Optional GPU selection
-- `CLAUDE_WORK_DIR` - Working directory for Claude CLI (defaults to ~/dev)
+## Key Patterns
 
-SSL certificates required in `certs/` (key.pem, cert.pem).
+**WebSocket Protocol** - Frontend sends audio as WAV binary after JSON metadata:
+```js
+ws.send(JSON.stringify({ type: "audio_meta", containerId }))
+ws.send(wavBuffer)
+```
 
-## Architecture
+**AI Provider Interface** - All providers implement:
+```python
+class AIProvider:
+    def get_response(self, message: str) -> str
+    def reset_chat(self) -> None
+    def set_history(self, history: list[dict]) -> None
+```
 
-### Backend (`backend/`)
-- `main.py` - FastAPI app with WebSocket (`/ws`) for real-time voice/AI communication and REST endpoints (`/tts`, `/tts/stream`)
-- `services/whisper_service.py` - Speech-to-text using faster-whisper (large-v3 on CUDA)
-- `services/tts_service.py` - Text-to-speech using Chatterbox TTS with optional voice cloning from `sample/reference_voice.wav`
-- `services/claude_service.py` - Claude CLI integration with two modes:
-  - Chat mode: Quick conversation via `--allowedTools ""`
-  - Planning mode: Full task execution with `--dangerously-skip-permissions`
-- `services/ai/` - AI provider abstraction (currently Gemini only)
+**Voice Command Flow** - `voiceCommands.ts` parses transcriptions before AI routing. Commands return `VoiceCommand` objects handled by `useSharedVoice.ts`.
 
-### Frontend (`frontend/src/`)
-- `context/ContainerContext.tsx` - State management for up to 5 chat containers (main, a-d) using React reducer
-- `hooks/useSharedVoice.ts` - Core voice interaction logic: VAD (voice activity detection), WebSocket, TTS playback with chunked streaming
-- `utils/voiceCommands.ts` - Voice command parsing for container switching, AI switching, task approval
-- `components/ChatView.tsx` - Message display with per-message TTS playback
+## Environment
 
-### Communication Flow
-1. VAD detects speech end, sends WAV audio via WebSocket with container metadata
-2. Backend transcribes with Whisper, returns transcription
-3. Frontend parses for voice commands or routes to appropriate AI
-4. AI response sent back, frontend plays TTS (chunked streaming for long responses)
+Copy `.env.example` to `.env`:
+- `GEMINI_API_KEY` - Required
+- `LOCAL_LLM_MODEL` - Ollama model (default: qwen3-coder-256k)
+- `CLAUDE_WORK_DIR` - Claude CLI working directory
 
-### Voice Commands
-Key commands parsed in `voiceCommands.ts`:
-- `"switch to claude/gemini"` - Change AI provider
-- `"switch to container A"` - Change active container
-- `"accept/cancel"` - Approve/deny Claude task plan
-- `"Claude, ..."` - Direct address switches to Claude mode
-- `"collect context"` / `"learn about this project"` - Claude scans project
-
-### Container System
-Multiple independent chat sessions with separate AI instances, message history, and speaking state. Background containers can queue TTS for when switched back to.
+SSL certs required in `certs/` for microphone access.

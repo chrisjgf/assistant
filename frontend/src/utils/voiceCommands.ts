@@ -18,12 +18,14 @@ export type VoiceCommandType =
   | "collect_context"
   | "task_status"
   | "wipe_context"
+  | "repeat_message"
   | "ignored"
 
 export interface VoiceCommand {
   type: VoiceCommandType
   containerId?: ContainerId
   targetAI?: "gemini" | "claude" | "local"
+  messageOffset?: number  // For repeat_message: 1 = last, 2 = second last, etc.
   rawText: string
 }
 
@@ -191,6 +193,68 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
     normalized === "start over"
   ) {
     return { type: "wipe_context", rawText: text }
+  }
+
+  // Repeat message commands
+  // Simple: "repeat", "repeat that", "say that again", "what did you say", "come again"
+  if (
+    normalized === "repeat" ||
+    normalized === "repeat that" ||
+    normalized === "repeat this" ||
+    normalized === "repeat it" ||
+    normalized === "say that again" ||
+    normalized === "say it again" ||
+    normalized === "what did you say" ||
+    normalized === "what was that" ||
+    normalized === "come again" ||
+    normalized === "pardon" ||
+    normalized === "sorry what" ||
+    normalized === "can you repeat that" ||
+    normalized === "could you repeat that"
+  ) {
+    return { type: "repeat_message", messageOffset: 1, rawText: text }
+  }
+
+  // Indexed: "repeat the last message", "repeat the second last message", etc.
+  const ordinals: Record<string, number> = {
+    "last": 1,
+    "first": 1,  // "first" in context of "repeat the first message" likely means last
+    "second last": 2,
+    "second to last": 2,
+    "third last": 3,
+    "third to last": 3,
+    "fourth last": 4,
+    "fourth to last": 4,
+    "previous": 1,
+    "one before": 2,
+    "one before that": 2,
+  }
+
+  const repeatIndexMatch = normalized.match(
+    /^repeat\s+(the\s+)?(last|first|second\s+(?:last|to\s+last)|third\s+(?:last|to\s+last)|fourth\s+(?:last|to\s+last)|previous|one\s+before(?:\s+that)?)\s*(?:message|response)?$/i
+  )
+  if (repeatIndexMatch) {
+    const ordinalPhrase = repeatIndexMatch[2].toLowerCase()
+    const offset = ordinals[ordinalPhrase] || 1
+    return { type: "repeat_message", messageOffset: offset, rawText: text }
+  }
+
+  // Numeric: "repeat message 2", "repeat the 2nd message", "repeat the second message"
+  const numericOrdinals: Record<string, number> = {
+    "1": 1, "1st": 1, "first": 1,
+    "2": 2, "2nd": 2, "second": 2,
+    "3": 3, "3rd": 3, "third": 3,
+    "4": 4, "4th": 4, "fourth": 4,
+    "5": 5, "5th": 5, "fifth": 5,
+  }
+
+  const repeatNumericMatch = normalized.match(
+    /^repeat\s+(the\s+)?(\d+|1st|2nd|3rd|4th|5th|first|second|third|fourth|fifth)\s*(?:last\s+)?(?:message|response)?$/i
+  )
+  if (repeatNumericMatch) {
+    const numericPhrase = repeatNumericMatch[2].toLowerCase()
+    const offset = numericOrdinals[numericPhrase] || 1
+    return { type: "repeat_message", messageOffset: offset, rawText: text }
   }
 
   // Ignored commands

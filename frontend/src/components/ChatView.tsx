@@ -1,3 +1,5 @@
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import type { Message } from "../context/ContainerContext"
 
 interface ChatViewProps {
@@ -66,7 +68,15 @@ export function ChatView({ messages, speakingId, onSpeak, onStopSpeak }: ChatVie
               </span>
             )}
             <div className="flex items-start gap-2">
-              <p className="text-sm whitespace-pre-wrap flex-1">{message.text}</p>
+              {message.source === "claude" ? (
+                <div className="text-sm prose prose-sm max-w-none flex-1 overflow-x-auto">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {message.text}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-sm whitespace-pre-wrap flex-1">{message.text}</p>
+              )}
               <button
                 onClick={() => handleSpeak(message)}
                 className={`flex-shrink-0 p-1 rounded hover:bg-black/10 transition-colors ${

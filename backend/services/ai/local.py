@@ -7,8 +7,8 @@ from ddgs import DDGS
 from services.ai.base import AIProvider
 
 
-# Load speaker.md for voice command reference
-SPEAKER_MD_PATH = Path(__file__).parent.parent.parent / "speaker.md"
+# Load SPEAKER.md for voice command reference
+SPEAKER_MD_PATH = Path(__file__).parent.parent.parent / "SPEAKER.md"
 SPEAKER_COMMANDS = ""
 if SPEAKER_MD_PATH.exists():
     SPEAKER_COMMANDS = SPEAKER_MD_PATH.read_text()

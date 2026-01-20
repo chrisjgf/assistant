@@ -47,14 +47,7 @@ A voice assistant application with multi-container support, session persistence,
 
 ### Voice Commands
 
-The application supports various voice commands for controlling the assistant:
-
-- "switch to branch X" - Switch to a specific git branch
-- "list branches" - List available git branches
-- "cancel task" - Cancel the current task
-- "queue status" - Show current task queue status
-- "clear queue" - Clear the task queue
-- "hallelujah" - Respond with "hallelujah" (new feature)
+See [SPEAKER.md](SPEAKER.md) for the full list of supported voice commands and natural language patterns.
 
 ## Project Structure
 

@@ -10,8 +10,8 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 
 
-# Load speaker.md for voice command reference
-SPEAKER_MD_PATH = Path(__file__).parent.parent / "speaker.md"
+# Load SPEAKER.md for voice command reference
+SPEAKER_MD_PATH = Path(__file__).parent.parent / "SPEAKER.md"
 SPEAKER_CONTEXT = ""
 if SPEAKER_MD_PATH.exists():
     SPEAKER_CONTEXT = SPEAKER_MD_PATH.read_text()

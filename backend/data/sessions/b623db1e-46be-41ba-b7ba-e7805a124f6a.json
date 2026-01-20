@@ -1,0 +1,78 @@
+{
+  "id": "b623db1e-46be-41ba-b7ba-e7805a124f6a",
+  "createdAt": "2026-01-20T15:24:31.709771Z",
+  "updatedAt": "2026-01-20T15:54:05.379040Z",
+  "activeMode": "todo",
+  "todoCategories": [
+    {
+      "id": "b172b3ae-6581-4af0-bb14-6981287d37e0",
+      "name": "Assistant",
+      "order": 0,
+      "tasks": [],
+      "messages": [
+        {
+          "id": "71a01c71-4091-415b-9273-bb3e96a68914",
+          "role": "user",
+          "text": "link this category to the assistant project"
+        },
+        {
+          "id": "897ac5da-4f78-43dd-8cc9-4edaaaa487d4",
+          "role": "assistant",
+          "text": "Linked to assistant",
+          "source": "local"
+        },
+        {
+          "id": "a3115159-6837-4bb3-b6a3-55ab35e59804",
+          "role": "user",
+          "text": "create a file called todo.md"
+        },
+        {
+          "id": "ec129fe4-475e-4f4e-b42b-4e51de09a767",
+          "role": "assistant",
+          "text": "I've created a todo.md file for you with a comprehensive list of tasks organized by category. The file includes general tasks, backend development items, frontend development goals, testing requirements, and documentation needs. You can use this as a starting point for tracking your project progress. Is there anything specific you'd like me to add or modify in this todo list?",
+          "source": "local"
+        },
+        {
+          "id": "6b8adf1e-398b-4196-8a50-aab2359eaec3",
+          "role": "user",
+          "text": "..."
+        },
+        {
+          "id": "1a8f965f-6c4f-4f3d-85bd-8f7dda6677ed",
+          "role": "assistant",
+          "text": "Take your time, there\u2019s no rush. Are you thinking of something for your project, a personal reminder, or maybe a specific milestone you want to hit?",
+          "source": "gemini"
+        },
+        {
+          "id": "89bf054d-ec6a-4961-8c69-fcc655d85606",
+          "role": "user",
+          "text": "Let's create a new task to, let's just make it a little small thing where if I say hallelujah, you just say hallelujah back to me, update the speaker readme to be able to add that functionality."
+        },
+        {
+          "id": "7aa234f9-33a8-444b-909a-998a677cacef",
+          "role": "assistant",
+          "text": "I've updated both the todo.md file and the README.md file with the new hallelujah functionality task. The todo list now includes a specific task to add the hallelujah response feature, and the README has been updated to document this new voice command in the \"Voice Commands\" section. \n\nThe hallelujah command is now listed as a supported voice command that users can say to get the assistant to respond with \"hallelujah\" back to them. Is there anything else you'd like me to add or modify about this new feature?",
+          "source": "local"
+        },
+        {
+          "id": "fb338df3-d128-45ff-ac20-9099347bff13",
+          "role": "user",
+          "text": "hallelujah"
+        },
+        {
+          "id": "d2c392ad-ec93-4b88-801f-5359f8be0ed7",
+          "role": "assistant",
+          "text": "Hallelujah!",
+          "source": "local"
+        }
+      ],
+      "activeAI": "local",
+      "directoryPath": "/home/x01/dev/assistant",
+      "status": "idle",
+      "projectContext": null,
+      "speakingId": null
+    }
+  ],
+  "brainCategories": [],
+  "containers": {}
+}

@@ -1,8 +1,10 @@
-import type { ContainerId } from "../context/ContainerContext"
-import { CONTAINER_NAMES } from "../context/ContainerContext"
+// Legacy container IDs for backward compatibility
+const CONTAINER_NAMES = ["main", "a", "b", "c", "d"] as const
+type ContainerId = typeof CONTAINER_NAMES[number]
 
 export type VoiceCommandType =
   | "switch_container"
+  | "switch_category"
   | "create_container"
   | "close_container"
   | "send_to_container"
@@ -27,13 +29,25 @@ export type VoiceCommandType =
   // Git worktree commands
   | "switch_branch"
   | "list_branches"
+  // Voice toggle mode commands
+  | "stop_listening"
+  | "send_now"
+  // Category management commands
+  | "manage_categories"
+  | "list_categories"
+  | "set_directory"
+  | "create_category_with_name"
+  | "list_directory"
 
 export interface VoiceCommand {
   type: VoiceCommandType
-  containerId?: ContainerId
+  containerId?: ContainerId  // Legacy container IDs
+  categoryId?: string  // Category UUID for AppContext
+  categoryName?: string  // For category switching by name (fuzzy match)
   targetAI?: "gemini" | "claude" | "local"
   messageOffset?: number  // For repeat_message: 1 = last, 2 = second last, etc.
   branch?: string  // For switch_branch command
+  directoryPath?: string  // For set_directory command
   rawText: string
 }
 
@@ -48,7 +62,7 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
 
   // === Container Commands ===
 
-  // Switch to container: flexible patterns
+  // Switch to container: flexible patterns (legacy)
   // "switch to main", "switch to main container", "switch to container a", "switch to a",
   // "change to main", "go to container b", "switch to the main container", etc.
   const switchMatch = normalized.match(/^(switch|change|go)\s+to\s+(the\s+)?(main|container\s*[a-d]|[a-d])(\s+container)?$/i)
@@ -56,6 +70,18 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
     const target = switchMatch[3].toLowerCase().replace(/container\s*/, "")
     if (target === "main" || CONTAINER_NAMES.includes(target as ContainerId)) {
       return { type: "switch_container", containerId: target as ContainerId, rawText: text }
+    }
+  }
+
+  // Switch to category: "switch to [name]", "go to [name] category", "select [name]"
+  // Captures category name for fuzzy matching in the hook
+  const categorySwitch = normalized.match(/^(switch|change|go|select)\s+(?:to\s+)?(?:the\s+)?(.+?)(?:\s+category)?$/i)
+  if (categorySwitch) {
+    const name = categorySwitch[2].trim()
+    // Don't match if it looks like a container command or AI switch
+    if (name && !CONTAINER_NAMES.includes(name as ContainerId) &&
+        !["gemini", "claude", "local", "cloud", "claw"].includes(name)) {
+      return { type: "switch_category", categoryName: name, rawText: text }
     }
   }
 
@@ -318,6 +344,116 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
     normalized.includes("what branches are available")
   ) {
     return { type: "list_branches", rawText: text }
+  }
+
+  // === Voice Toggle Mode Commands ===
+
+  // Stop listening mode: "stop listening", "exit listening", "listening off"
+  if (
+    normalized === "stop listening" ||
+    normalized === "exit listening" ||
+    normalized === "listening off" ||
+    normalized === "turn off listening" ||
+    normalized === "disable listening"
+  ) {
+    return { type: "stop_listening", rawText: text }
+  }
+
+  // Send/process now: "send", "send it", "thats all", "im done"
+  if (
+    normalized === "send" ||
+    normalized === "send it" ||
+    normalized === "send now" ||
+    normalized === "process" ||
+    normalized === "process now" ||
+    normalized === "thats all" ||
+    normalized === "that is all" ||
+    normalized === "im done" ||
+    normalized === "i am done" ||
+    normalized === "done talking" ||
+    normalized === "finished"
+  ) {
+    return { type: "send_now", rawText: text }
+  }
+
+  // === Directory Commands ===
+
+  // List directory: "list the directory", "show files here", "what files are here"
+  const listDirMatch = normalized.match(
+    /^(?:list|show)\s+(?:the\s+)?(?:directory|files|folder)(?:\s+here)?$/i
+  )
+  if (listDirMatch) {
+    return { type: "list_directory", rawText: text }
+  }
+
+  // Also match: "what files are here", "what's in this directory"
+  if (
+    normalized === "what files are here" ||
+    normalized === "whats in this directory" ||
+    normalized === "what is in this directory" ||
+    normalized === "show directory contents" ||
+    normalized === "directory contents"
+  ) {
+    return { type: "list_directory", rawText: text }
+  }
+
+  // === Category Management Commands ===
+
+  // Create category with specific name: "create a new category called Work", "make a category named Projects"
+  const createCategoryWithNameMatch = normalized.match(
+    /^(?:create|make|new|add)\s+(?:a\s+)?(?:new\s+)?category\s+(?:called|named)\s+(.+)$/i
+  )
+  if (createCategoryWithNameMatch) {
+    const rawName = createCategoryWithNameMatch[1].trim()
+    const categoryName = rawName
+      .split(/\s+/)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(" ")
+    return { type: "create_category_with_name", categoryName, rawText: text }
+  }
+
+  // Manage categories: "manage categories", "category settings", "create category", "new category"
+  if (
+    normalized === "manage categories" ||
+    normalized === "category settings" ||
+    normalized === "edit categories" ||
+    normalized === "create category" ||
+    normalized === "create a category" ||
+    normalized === "new category" ||
+    normalized === "create a new category" ||
+    normalized === "add category" ||
+    normalized === "add a category"
+  ) {
+    return { type: "manage_categories", rawText: text }
+  }
+
+  // List categories: "list categories", "what categories", "show categories"
+  if (
+    normalized === "list categories" ||
+    normalized === "show categories" ||
+    normalized === "what categories" ||
+    normalized === "available categories" ||
+    normalized.includes("what categories do i have") ||
+    normalized.includes("what categories are there")
+  ) {
+    return { type: "list_categories", rawText: text }
+  }
+
+  // Set directory: "set directory to /path", "connect to /path", "associate directory /path"
+  const setDirMatch = normalized.match(/^(?:set|connect|associate)\s+(?:this\s+)?(?:directory|folder|path)\s+(?:to\s+)?(.+)$/i)
+  if (setDirMatch) {
+    const dirPath = setDirMatch[1].trim()
+    return { type: "set_directory", directoryPath: dirPath, rawText: text }
+  }
+
+  // Also match: "connect /path to this category", "connect the dev directory"
+  const connectDirMatch = normalized.match(/^connect\s+(?:the\s+)?(.+?)(?:\s+to\s+(?:this|the)\s+category)?$/i)
+  if (connectDirMatch && !normalized.includes("social")) {
+    const dirPath = connectDirMatch[1].trim()
+    // Only if it looks like a path (starts with / or ~ or contains /)
+    if (dirPath.startsWith("/") || dirPath.startsWith("~") || dirPath.includes("/")) {
+      return { type: "set_directory", directoryPath: dirPath, rawText: text }
+    }
   }
 
   // Ignored commands

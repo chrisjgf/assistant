@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react"
-import { useContainers } from "./useContainers"
+import { useApp } from "../context/AppContext"
 import { parseVoiceCommand, parseClaudeDirectAddress, isClaudeExitCommand } from "../utils/voiceCommands"
 import type { VoiceCommand } from "../utils/voiceCommands"
-import type { Status, Message, ContainerId } from "../context/ContainerContext"
-import { CONTAINER_NAMES } from "../context/ContainerContext"
+import type { Status, TodoCategory, Message } from "../types"
 
 declare global {
   interface Window {
@@ -84,14 +83,22 @@ function stripMarkdown(text: string): string {
     .trim()
 }
 
+export type NavigationRequest = "management" | "list" | "chat" | null
+
 export interface UseSharedVoiceReturn {
   globalStatus: Status
   isConnected: boolean
   isLoading: boolean
   error: string | null
+  listeningMode: boolean
+  hasBufferedSpeech: boolean
+  isProcessing: boolean
+  navigationRequest: NavigationRequest
+  clearNavigationRequest: () => void
   start: () => Promise<void>
   stop: () => void
   stopAudio: () => void
+  processNow: () => void
   sendClaudeConfirm: (containerId: string, taskId: string) => void
   sendClaudeDeny: (containerId: string, taskId: string) => void
   saveChat: () => void
@@ -101,20 +108,42 @@ export interface UseSharedVoiceReturn {
 
 export function useSharedVoice(): UseSharedVoiceReturn {
   const {
-    containers,
-    activeContainerId,
-    activeContainer,
+    state,
     dispatch,
-    createContainer,
-    switchToContainer,
-    deleteContainer,
-    getNextAvailableContainerId,
-  } = useContainers()
+    createCategory,
+    selectCategory,
+    addMessage,
+    updateMessage,
+    removeMessage,
+    clearMessages,
+    setAI,
+    setCategoryStatus,
+    setCategorySpeaking,
+    setProjectContext,
+    setDirectoryPath,
+    navigateToView,
+  } = useApp()
+
+  // Derive values from state
+  const categories = state.todoCategories
+  const selectedCategoryId = state.selectedCategoryId
 
   const [globalStatus, setGlobalStatus] = useState<Status>("idle")
   const [isConnected, setIsConnected] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [listeningMode, setListeningMode] = useState(false)
+  const [hasBufferedSpeech, setHasBufferedSpeech] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [navigationRequest, setNavigationRequest] = useState<NavigationRequest>(null)
+
+  // Ref to track listening mode for use in callbacks
+  const listeningModeRef = useRef(false)
+
+  // Clear navigation request (should be called by parent after handling)
+  const clearNavigationRequest = useCallback(() => {
+    setNavigationRequest(null)
+  }, [])
 
   const wsRef = useRef<WebSocket | null>(null)
   const vadRef = useRef<Awaited<ReturnType<typeof window.vad.MicVAD.new>> | null>(null)
@@ -124,13 +153,27 @@ export function useSharedVoice(): UseSharedVoiceReturn {
   const ttsRequestIdRef = useRef(0)
   const skipNextResponseRef = useRef(false)
   const aiDisabledRef = useRef(false)
-  const activeContainerIdRef = useRef(activeContainerId)
-  const containersRef = useRef(containers)
+  const selectedCategoryIdRef = useRef(selectedCategoryId)
+  const categoriesRef = useRef(categories)
+
+  // Helper to find category by ID
+  const getCategoryById = useCallback((categoryId: string | null): TodoCategory | undefined => {
+    if (!categoryId) return undefined
+    return categoriesRef.current.find(c => c.id === categoryId)
+  }, [])
+
+  // Helper to find category by name (fuzzy match)
+  const findCategoryByName = useCallback((name: string): TodoCategory | undefined => {
+    const normalized = name.toLowerCase()
+    return categoriesRef.current.find(c =>
+      c.name.toLowerCase().includes(normalized) ||
+      normalized.includes(c.name.toLowerCase())
+    )
+  }, [])
 
   // Message buffering - collect speech segments before processing
   const speechBufferRef = useRef<Float32Array[]>([])
   const bufferTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const BUFFER_DELAY_MS = 800 // Wait 800ms after last speech segment before processing
 
   // Helper to concatenate multiple audio buffers into one
   const concatenateAudioBuffers = useCallback((buffers: Float32Array[]): Float32Array => {
@@ -144,14 +187,50 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     return result
   }, [])
 
+  // Process buffered speech - called after buffer delay
+  const processBufferedSpeech = useCallback(() => {
+    if (speechBufferRef.current.length === 0) return
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      console.log("WebSocket not ready, clearing buffer")
+      speechBufferRef.current = []
+      setHasBufferedSpeech(false)
+      return
+    }
+
+    const categoryId = selectedCategoryIdRef.current
+    const category = categoryId ? categoriesRef.current.find(c => c.id === categoryId) : undefined
+    const isGlobalMode = !categoryId
+    console.log(`Processing ${speechBufferRef.current.length} buffered speech segment(s)${isGlobalMode ? " (global mode)" : ""}`)
+
+    // Mark as processing and clear buffer state
+    setIsProcessing(true)
+    setHasBufferedSpeech(false)
+
+    // Concatenate all buffered audio
+    const combinedAudio = concatenateAudioBuffers(speechBufferRef.current)
+    speechBufferRef.current = []
+
+    // Encode and send audio with category ID (backend accepts containerId or categoryId)
+    // In global mode, we send without a category - backend will just transcribe
+    const wavBuffer = encodeWAV(combinedAudio, 16000)
+    wsRef.current?.send(JSON.stringify({
+      type: "audio_meta",
+      containerId: categoryId,
+      globalMode: isGlobalMode,
+      directoryPath: category?.directoryPath || null,
+      projectContext: category?.projectContext || null
+    }))
+    wsRef.current?.send(wavBuffer)
+  }, [concatenateAudioBuffers])
+
   // Keep refs in sync with state
   useEffect(() => {
-    activeContainerIdRef.current = activeContainerId
-  }, [activeContainerId])
+    selectedCategoryIdRef.current = selectedCategoryId
+  }, [selectedCategoryId])
 
   useEffect(() => {
-    containersRef.current = containers
-  }, [containers])
+    categoriesRef.current = categories
+  }, [categories])
 
   // Create a soft rhythmic thinking beat using Web Audio API
   const startThinkingBeat = useCallback(() => {
@@ -217,26 +296,20 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     }
     window.speechSynthesis.cancel()
 
-    // Clear speaking state for active container
-    dispatch({
-      type: "SET_SPEAKING",
-      payload: { containerId: activeContainerIdRef.current, messageId: null },
-    })
-  }, [stopThinkingBeat, dispatch])
+    // Clear speaking state for active category
+    const categoryId = selectedCategoryIdRef.current
+    if (categoryId) {
+      setCategorySpeaking(categoryId, null)
+    }
+  }, [stopThinkingBeat, setCategorySpeaking])
 
   const playTTS = useCallback(
-    async (containerId: string, text: string, messageId: string) => {
-      // Only play TTS for active container
-      if (containerId !== activeContainerIdRef.current) {
-        // Store pending TTS for background container
-        dispatch({
-          type: "SET_PENDING_TTS",
-          payload: { containerId, tts: { text, messageId } },
-        })
-        dispatch({
-          type: "SET_STATUS",
-          payload: { containerId, status: "ready" },
-        })
+    async (categoryId: string, text: string, messageId: string) => {
+      // Only play TTS for active category
+      if (categoryId !== selectedCategoryIdRef.current) {
+        // Store pending TTS for background category (global state)
+        dispatch({ type: "SET_PENDING_TTS", payload: { text, messageId } })
+        setCategoryStatus(categoryId, "ready")
         return
       }
 
@@ -250,8 +323,8 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       window.speechSynthesis.cancel()
 
       setGlobalStatus("speaking")
-      dispatch({ type: "SET_STATUS", payload: { containerId, status: "speaking" } })
-      dispatch({ type: "SET_SPEAKING", payload: { containerId, messageId } })
+      setCategoryStatus(categoryId, "speaking")
+      setCategorySpeaking(categoryId, messageId)
 
       try {
         const response = await fetch(`${API_URL}/tts/stream`, {
@@ -274,15 +347,33 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           audioRef.current = audio
 
           audio.onended = () => {
-            dispatch({ type: "SET_SPEAKING", payload: { containerId, messageId: null } })
-            dispatch({ type: "SET_STATUS", payload: { containerId, status: "idle" } })
-            setGlobalStatus("listening")
+            setCategorySpeaking(categoryId, null)
+            setCategoryStatus(categoryId, "idle")
             URL.revokeObjectURL(audioUrl)
+
+            // In toggle mode, resume listening instead of destroying VAD
+            if (listeningModeRef.current && vadRef.current) {
+              setGlobalStatus("listening")
+              vadRef.current.start().catch(console.error)
+            } else {
+              // Original behavior: destroy VAD
+              if (vadRef.current) {
+                vadRef.current.pause()
+                vadRef.current.destroy()
+                vadRef.current = null
+              }
+              setGlobalStatus("idle")
+            }
           }
           audio.onerror = () => {
-            dispatch({ type: "SET_SPEAKING", payload: { containerId, messageId: null } })
-            dispatch({ type: "SET_STATUS", payload: { containerId, status: "idle" } })
-            setGlobalStatus("listening")
+            setCategorySpeaking(categoryId, null)
+            setCategoryStatus(categoryId, "idle")
+            if (vadRef.current) {
+              vadRef.current.pause()
+              vadRef.current.destroy()
+              vadRef.current = null
+            }
+            setGlobalStatus("idle")
           }
 
           stopThinkingBeat()
@@ -303,11 +394,24 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
         const checkComplete = () => {
           if (readerDone && audioQueue.length === 0 && !isPlaying) {
-            dispatch({ type: "SET_SPEAKING", payload: { containerId, messageId: null } })
-            dispatch({ type: "SET_STATUS", payload: { containerId, status: "idle" } })
-            setGlobalStatus("listening")
+            setCategorySpeaking(categoryId, null)
+            setCategoryStatus(categoryId, "idle")
             audioContext.close()
             audioContextRef.current = null
+
+            // In toggle mode, resume listening instead of destroying VAD
+            if (listeningModeRef.current && vadRef.current) {
+              setGlobalStatus("listening")
+              vadRef.current.start().catch(console.error)
+            } else {
+              // Original behavior: destroy VAD
+              if (vadRef.current) {
+                vadRef.current.pause()
+                vadRef.current.destroy()
+                vadRef.current = null
+              }
+              setGlobalStatus("idle")
+            }
           }
         }
 
@@ -373,67 +477,81 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         stopThinkingBeat()
         const utterance = new SpeechSynthesisUtterance(text)
         utterance.onend = () => {
-          dispatch({ type: "SET_SPEAKING", payload: { containerId, messageId: null } })
-          dispatch({ type: "SET_STATUS", payload: { containerId, status: "idle" } })
-          setGlobalStatus("listening")
+          setCategorySpeaking(categoryId, null)
+          setCategoryStatus(categoryId, "idle")
+
+          // In toggle mode, resume listening instead of destroying VAD
+          if (listeningModeRef.current && vadRef.current) {
+            setGlobalStatus("listening")
+            vadRef.current.start().catch(console.error)
+          } else {
+            // Original behavior: destroy VAD
+            if (vadRef.current) {
+              vadRef.current.pause()
+              vadRef.current.destroy()
+              vadRef.current = null
+            }
+            setGlobalStatus("idle")
+          }
         }
         window.speechSynthesis.speak(utterance)
       }
     },
-    [stopThinkingBeat, dispatch]
+    [stopThinkingBeat, setCategorySpeaking, setCategoryStatus, dispatch]
   )
 
-  // Handle switching containers - play pending TTS
+  // Handle switching categories - play pending TTS
   useEffect(() => {
-    const container = containers.get(activeContainerId)
-    if (container?.pendingTTS) {
-      const { text, messageId } = container.pendingTTS
-      dispatch({ type: "SET_PENDING_TTS", payload: { containerId: activeContainerId, tts: null } })
-      playTTS(activeContainerId, text, messageId)
+    if (state.pendingTTS && selectedCategoryId) {
+      const { text, messageId } = state.pendingTTS
+      dispatch({ type: "SET_PENDING_TTS", payload: null })
+      playTTS(selectedCategoryId, text, messageId)
     }
-  }, [activeContainerId, containers, dispatch, playTTS])
+  }, [selectedCategoryId, state.pendingTTS, dispatch, playTTS])
 
   const saveChat = useCallback(() => {
-    const container = containersRef.current.get(activeContainerIdRef.current)
-    if (!container) return
+    const categoryId = selectedCategoryIdRef.current
+    const category = getCategoryById(categoryId)
+    if (!category) return
 
     const chatData = {
       timestamp: new Date().toISOString(),
-      containerId: activeContainerIdRef.current,
-      messages: container.messages,
+      categoryId,
+      categoryName: category.name,
+      messages: category.messages,
     }
     const blob = new Blob([JSON.stringify(chatData, null, 2)], { type: "application/json" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `chat-${activeContainerIdRef.current}-${new Date().toISOString().slice(0, 19).replace(/[:-]/g, "")}.json`
+    a.download = `chat-${category.name.replace(/\s+/g, "-")}-${new Date().toISOString().slice(0, 19).replace(/[:-]/g, "")}.json`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
-  }, [])
+  }, [getCategoryById])
 
-  const sendClaudeChat = useCallback((containerId: string, text: string, context: string = "") => {
-    const container = containersRef.current.get(containerId)
+  const sendClaudeChat = useCallback((categoryId: string, text: string, context: string = "") => {
+    const category = getCategoryById(categoryId)
     wsRef.current?.send(JSON.stringify({
       type: "claude_chat",
-      containerId,
+      containerId: categoryId,  // Backend accepts containerId
       text,
       context,
-      projectContext: container?.projectContext || "",
+      projectContext: category?.projectContext || "",
     }))
-  }, [])
+  }, [getCategoryById])
 
-  const sendClaudePlanRequest = useCallback((containerId: string, text: string) => {
-    const container = containersRef.current.get(containerId)
-    const projectContext = container?.projectContext || ""
+  const sendClaudePlanRequest = useCallback((categoryId: string, text: string) => {
+    const category = getCategoryById(categoryId)
+    const projectContext = category?.projectContext || ""
     const fullPrompt = projectContext ? `Project Context:\n${projectContext}\n\nTask: ${text}` : text
     wsRef.current?.send(JSON.stringify({
       type: "claude_request",
-      containerId,
+      containerId: categoryId,  // Backend accepts containerId
       text: fullPrompt,
     }))
-  }, [])
+  }, [getCategoryById])
 
   const sendClaudeConfirm = useCallback((containerId: string, taskId: string) => {
     wsRef.current?.send(JSON.stringify({
@@ -453,181 +571,100 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
   // Helper to update pending message
   const updatePendingMessage = useCallback(
-    (containerId: string, text: string | null) => {
-      const container = containersRef.current.get(containerId)
-      if (!container) return
+    (categoryId: string, text: string | null) => {
+      const category = getCategoryById(categoryId)
+      if (!category) return
 
-      const lastPendingIndex = container.messages.findLastIndex(
-        (msg) => msg.role === "user" && msg.text === "..."
+      const lastPendingIndex = category.messages.findLastIndex(
+        (msg: Message) => msg.role === "user" && msg.text === "..."
       )
       if (lastPendingIndex === -1) return
 
-      const pendingMessage = container.messages[lastPendingIndex]
+      const pendingMessage = category.messages[lastPendingIndex]
       if (text === null) {
-        dispatch({ type: "REMOVE_MESSAGE", payload: { containerId, messageId: pendingMessage.id } })
+        removeMessage(categoryId, pendingMessage.id)
       } else {
-        dispatch({ type: "UPDATE_MESSAGE", payload: { containerId, messageId: pendingMessage.id, text } })
+        updateMessage(categoryId, pendingMessage.id, text)
       }
     },
-    [dispatch]
+    [getCategoryById, removeMessage, updateMessage]
   )
 
   // Add local assistant message
   const addLocalResponse = useCallback(
-    (containerId: string, text: string, source: "gemini" | "claude" | "local" = "gemini") => {
+    (categoryId: string, text: string, source: "gemini" | "claude" | "local" = "gemini") => {
       const messageId = crypto.randomUUID()
-      dispatch({
-        type: "ADD_MESSAGE",
-        payload: { containerId, message: { id: messageId, role: "assistant", text, source } },
-      })
+      const message: Message = { id: messageId, role: "assistant", text, source }
+      addMessage(categoryId, message)
       return messageId
     },
-    [dispatch]
+    [addMessage]
   )
 
   // Handle voice commands
   const handleVoiceCommand = useCallback(
-    (command: VoiceCommand, containerId: string): boolean => {
-      const currentContainers = containersRef.current
-      const container = currentContainers.get(containerId)
+    (command: VoiceCommand, categoryId: string): boolean => {
+      const currentCategories = categoriesRef.current
+      const category = getCategoryById(categoryId)
 
       switch (command.type) {
-        case "switch_container": {
-          if (command.containerId && currentContainers.has(command.containerId)) {
-            stopThinkingBeat()
-            updatePendingMessage(containerId, command.rawText)
-            switchToContainer(command.containerId)
-            const messageId = addLocalResponse(containerId, `Switched to ${command.containerId === "main" ? "main" : `container ${command.containerId.toUpperCase()}`}.`)
-            playTTS(containerId, `Switched to ${command.containerId === "main" ? "main" : `container ${command.containerId.toUpperCase()}`}.`, messageId)
-            return true
+        // Switch to category by name (fuzzy match)
+        case "switch_category": {
+          if (command.categoryName) {
+            const targetCategory = findCategoryByName(command.categoryName)
+            if (targetCategory) {
+              stopThinkingBeat()
+              updatePendingMessage(categoryId, command.rawText)
+              selectCategory(targetCategory.id)
+              const messageId = addLocalResponse(categoryId, `Switched to ${targetCategory.name}.`)
+              playTTS(categoryId, `Switched to ${targetCategory.name}.`, messageId)
+              return true
+            } else {
+              // Category not found - inform user
+              const messageId = addLocalResponse(categoryId, `Category "${command.categoryName}" not found.`)
+              playTTS(categoryId, `Category ${command.categoryName} not found.`, messageId)
+              return true
+            }
           }
           return false
         }
 
-        case "create_container": {
+        // Legacy container switching - for backward compatibility
+        case "switch_container": {
+          // In category mode, we ignore legacy container switches
+          // but we could map them if needed
           stopThinkingBeat()
-          updatePendingMessage(containerId, command.rawText)
+          updatePendingMessage(categoryId, command.rawText)
+          const messageId = addLocalResponse(categoryId, "Container switching not available. Use category names instead.")
+          playTTS(categoryId, "Container switching not available. Use category names instead.", messageId)
+          return true
+        }
 
-          let newId: ContainerId | null = null
-          if (command.containerId && !currentContainers.has(command.containerId)) {
-            dispatch({
-              type: "CREATE_CONTAINER",
-              payload: { id: command.containerId, inheritAI: container?.activeAI },
-            })
-            newId = command.containerId
-          } else {
-            newId = createContainer({ inheritAI: container?.activeAI })
-          }
-
-          if (newId) {
-            switchToContainer(newId)
-            const messageId = addLocalResponse(containerId, `Created container ${newId.toUpperCase()}.`)
-            playTTS(containerId, `Created container ${newId.toUpperCase()}.`, messageId)
-          } else {
-            const messageId = addLocalResponse(containerId, "Maximum containers reached.")
-            playTTS(containerId, "Maximum containers reached.", messageId)
-          }
+        case "create_container": {
+          // In category mode, redirect to category management
+          stopThinkingBeat()
+          updatePendingMessage(categoryId, command.rawText)
+          navigateToView("management")
+          setNavigationRequest("management")
+          const messageId = addLocalResponse(categoryId, "Opening category management to create a new category.")
+          playTTS(categoryId, "Opening category management to create a new category.", messageId)
           return true
         }
 
         case "send_to_container": {
-          if (!command.containerId) return false
+          // In category mode, this functionality is not directly applicable
           stopThinkingBeat()
-          updatePendingMessage(containerId, command.rawText)
-
-          // Get recent context (last 5 messages)
-          const recentMessages = container?.messages.slice(-5) || []
-
-          // Create or update target container
-          const targetExists = currentContainers.has(command.containerId)
-          if (!targetExists) {
-            dispatch({
-              type: "CREATE_CONTAINER",
-              payload: {
-                id: command.containerId,
-                inheritAI: container?.activeAI,
-                initialMessages: recentMessages,
-              },
-            })
-          } else {
-            // Add context to existing container
-            for (const msg of recentMessages) {
-              dispatch({
-                type: "ADD_MESSAGE",
-                payload: { containerId: command.containerId, message: { ...msg, id: crypto.randomUUID() } },
-              })
-            }
-          }
-
-          // Set container to processing and send request
-          dispatch({ type: "SET_STATUS", payload: { containerId: command.containerId, status: "processing" } })
-
-          // Build a summary prompt from recent context
-          const contextSummary = recentMessages
-            .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`)
-            .join("\n")
-
-          const targetAI = container?.activeAI || "gemini"
-          if (targetAI === "claude") {
-            sendClaudeRequest(command.containerId, `Continue working on this: ${contextSummary}`)
-          } else if (targetAI === "local") {
-            wsRef.current?.send(JSON.stringify({
-              type: "local_request",
-              containerId: command.containerId,
-              text: `Continue working on this: ${contextSummary}`,
-            }))
-          } else {
-            // For Gemini, we send via WebSocket
-            wsRef.current?.send(JSON.stringify({
-              type: "gemini_request",
-              containerId: command.containerId,
-              text: `Continue working on this: ${contextSummary}`,
-            }))
-          }
-
-          const messageId = addLocalResponse(containerId, `Sent context to container ${command.containerId.toUpperCase()}. It's working in the background.`)
-          playTTS(containerId, `Sent to container ${command.containerId.toUpperCase()}. It's working in the background.`, messageId)
+          updatePendingMessage(categoryId, command.rawText)
+          const messageId = addLocalResponse(categoryId, "Send to container not available in category mode.")
+          playTTS(categoryId, "Send to container not available in category mode.", messageId)
           return true
-        }
-
-        case "close_container": {
-          // Use specified container or current container
-          const targetContainer = command.containerId || containerId
-
-          // Can't close main
-          if (targetContainer === "main") {
-            stopThinkingBeat()
-            updatePendingMessage(containerId, command.rawText)
-            const messageId = addLocalResponse(containerId, "Cannot close the main container.")
-            playTTS(containerId, "Cannot close the main container.", messageId)
-            return true
-          }
-
-          // Can't close if only one container exists
-          if (currentContainers.size <= 1) {
-            stopThinkingBeat()
-            updatePendingMessage(containerId, command.rawText)
-            const messageId = addLocalResponse(containerId, "Cannot close the only container.")
-            playTTS(containerId, "Cannot close the only container.", messageId)
-            return true
-          }
-
-          if (currentContainers.has(targetContainer)) {
-            stopThinkingBeat()
-            updatePendingMessage(containerId, command.rawText)
-            deleteContainer(targetContainer)
-            const messageId = addLocalResponse(containerId, `Closed container ${targetContainer.toUpperCase()}.`)
-            playTTS(containerId, `Closed container ${targetContainer.toUpperCase()}.`, messageId)
-            return true
-          }
-          return false
         }
 
         case "save_chat": {
           stopThinkingBeat()
           saveChat()
-          updatePendingMessage(containerId, "Save chat")
-          addLocalResponse(containerId, "Chat saved.", container?.activeAI)
+          updatePendingMessage(categoryId, "Save chat")
+          addLocalResponse(categoryId, "Chat saved.", category?.activeAI)
           setGlobalStatus("listening")
           return true
         }
@@ -635,8 +672,8 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         case "disable_ai": {
           stopThinkingBeat()
           aiDisabledRef.current = true
-          updatePendingMessage(containerId, "Disable")
-          addLocalResponse(containerId, "AI disabled. Say 'start' to re-enable.", container?.activeAI)
+          updatePendingMessage(categoryId, "Disable")
+          addLocalResponse(categoryId, "AI disabled. Say 'start' to re-enable.", category?.activeAI)
           setGlobalStatus("listening")
           return true
         }
@@ -644,8 +681,8 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         case "enable_ai": {
           stopThinkingBeat()
           aiDisabledRef.current = false
-          updatePendingMessage(containerId, "Start")
-          addLocalResponse(containerId, "AI enabled.", container?.activeAI)
+          updatePendingMessage(categoryId, "Start")
+          addLocalResponse(categoryId, "AI enabled.", category?.activeAI)
           setGlobalStatus("listening")
           return true
         }
@@ -653,14 +690,14 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         case "switch_ai": {
           if (command.targetAI) {
             stopThinkingBeat()
-            updatePendingMessage(containerId, command.rawText)
-            dispatch({ type: "SET_AI", payload: { containerId, ai: command.targetAI } })
+            updatePendingMessage(categoryId, command.rawText)
+            setAI(categoryId, command.targetAI)
 
             // Build conversation history to transfer to the new AI
-            const historyMessages = container?.messages
-              .filter((m) => m.text !== "...")
+            const historyMessages = category?.messages
+              .filter((m: Message) => m.text !== "...")
               .slice(-20) // Last 20 messages for context
-              .map((m) => ({
+              .map((m: Message) => ({
                 role: m.role,
                 content: m.text,
               })) || []
@@ -669,7 +706,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
             if (historyMessages.length > 0) {
               wsRef.current?.send(JSON.stringify({
                 type: "set_history",
-                containerId,
+                containerId: categoryId,
                 provider: command.targetAI,
                 history: historyMessages,
               }))
@@ -677,62 +714,51 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
             const aiNames: Record<string, string> = { gemini: "Gemini", claude: "Claude", local: "Local" }
             const aiName = aiNames[command.targetAI] || command.targetAI
-            const messageId = addLocalResponse(containerId, `Switched to ${aiName}.`, command.targetAI)
-            playTTS(containerId, `Switched to ${aiName}.`, messageId)
+            const messageId = addLocalResponse(categoryId, `Switched to ${aiName}.`, command.targetAI)
+            playTTS(categoryId, `Switched to ${aiName}.`, messageId)
             return true
           }
           return false
         }
 
         case "escalate_ai": {
+          // In category mode, we switch AI without creating new container
           if (command.targetAI) {
             stopThinkingBeat()
-            updatePendingMessage(containerId, command.rawText)
+            updatePendingMessage(categoryId, command.rawText)
+            setAI(categoryId, command.targetAI)
 
-            // Create new container with current messages
-            const currentMessages = container?.messages || []
-            const newId = createContainer({
-              inheritAI: command.targetAI,
-              initialMessages: currentMessages,
-            })
-
-            if (newId) {
-              switchToContainer(newId)
-              const aiNames: Record<string, string> = { gemini: "Gemini", claude: "Claude", local: "Local" }
-              const aiName = aiNames[command.targetAI]
-              const messageId = addLocalResponse(newId, `Escalated to ${aiName} in container ${newId.toUpperCase()}.`, command.targetAI)
-              playTTS(newId, `Moved to ${aiName}.`, messageId)
-            } else {
-              const messageId = addLocalResponse(containerId, "No container slots available.", container?.activeAI)
-              playTTS(containerId, "No container slots available.", messageId)
-            }
+            const aiNames: Record<string, string> = { gemini: "Gemini", claude: "Claude", local: "Local" }
+            const aiName = aiNames[command.targetAI]
+            const messageId = addLocalResponse(categoryId, `Escalated to ${aiName}.`, command.targetAI)
+            playTTS(categoryId, `Moved to ${aiName}.`, messageId)
             return true
           }
           return false
         }
 
         case "accept_task": {
-          const task = container?.claudeTask
+          const task = state.claudeTask
           if (task) {
             // Existing flow: confirm pending task
             stopThinkingBeat()
-            updatePendingMessage(containerId, "Accept")
-            sendClaudeConfirm(containerId, task.id)
-            dispatch({ type: "SET_CLAUDE_TASK", payload: { containerId, task: null } })
+            updatePendingMessage(categoryId, "Accept")
+            sendClaudeConfirm(categoryId, task.id)
+            dispatch({ type: "SET_CLAUDE_TASK", payload: null })
             setGlobalStatus("listening")
             return true
-          } else if (container?.activeAI === "claude") {
+          } else if (category?.activeAI === "claude") {
             // No pending task, but in Claude mode - execute last user request
-            const lastUserMessage = container.messages
-              .filter((m) => m.role === "user" && m.text !== "...")
+            const lastUserMessage = category.messages
+              .filter((m: Message) => m.role === "user" && m.text !== "...")
               .pop()
             if (lastUserMessage) {
               stopThinkingBeat()
-              updatePendingMessage(containerId, "Accept")
+              updatePendingMessage(categoryId, "Accept")
               startThinkingBeat()
-              const messageId = addLocalResponse(containerId, "Working on that now...", "claude")
-              playTTS(containerId, "Working on it.", messageId)
-              sendClaudePlanRequest(containerId, lastUserMessage.text)
+              const messageId = addLocalResponse(categoryId, "Working on that now...", "claude")
+              playTTS(categoryId, "Working on it.", messageId)
+              sendClaudePlanRequest(categoryId, lastUserMessage.text)
               return true
             }
           }
@@ -740,12 +766,12 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         }
 
         case "deny_task": {
-          const task = container?.claudeTask
+          const task = state.claudeTask
           if (task) {
             stopThinkingBeat()
-            updatePendingMessage(containerId, "Cancel")
-            sendClaudeDeny(containerId, task.id)
-            dispatch({ type: "SET_CLAUDE_TASK", payload: { containerId, task: null } })
+            updatePendingMessage(categoryId, "Cancel")
+            sendClaudeDeny(categoryId, task.id)
+            dispatch({ type: "SET_CLAUDE_TASK", payload: null })
             setGlobalStatus("listening")
             return true
           }
@@ -753,49 +779,41 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         }
 
         case "task_status": {
-          // Check task status on specified container or current container
-          const targetId = command.containerId || containerId
-          const targetContainer = containersRef.current.get(targetId)
+          // Check task status for current category
           stopThinkingBeat()
-          updatePendingMessage(containerId, command.rawText)
+          updatePendingMessage(categoryId, command.rawText)
 
-          if (!targetContainer) {
-            const messageId = addLocalResponse(containerId, `Container ${targetId.toUpperCase()} does not exist.`)
-            playTTS(containerId, `Container ${targetId.toUpperCase()} does not exist.`, messageId)
-            return true
-          }
-
-          const containerName = targetId === "main" ? "Main" : targetId.toUpperCase()
-          const task = targetContainer.claudeTask
+          const categoryName = category?.name || "current"
+          const task = state.claudeTask
 
           if (task) {
             const shortPlan = task.plan.length > 100 ? task.plan.slice(0, 100) + "..." : task.plan
-            const messageId = addLocalResponse(containerId, `${containerName} has a pending task: ${shortPlan}`)
-            playTTS(containerId, `${containerName} has a pending task awaiting approval.`, messageId)
+            const messageId = addLocalResponse(categoryId, `${categoryName} has a pending task: ${shortPlan}`)
+            playTTS(categoryId, `${categoryName} has a pending task awaiting approval.`, messageId)
           } else {
-            const messageId = addLocalResponse(containerId, `No active task on ${containerName}.`)
-            playTTS(containerId, `No active task on ${containerName}.`, messageId)
+            const messageId = addLocalResponse(categoryId, `No active task on ${categoryName}.`)
+            playTTS(categoryId, `No active task on ${categoryName}.`, messageId)
           }
           return true
         }
 
         case "plan_task": {
           // Only works in Claude mode - trigger planning from conversation
-          if (container?.activeAI === "claude") {
+          if (category?.activeAI === "claude") {
             stopThinkingBeat()
-            updatePendingMessage(containerId, "Plan this")
+            updatePendingMessage(categoryId, "Plan this")
             startThinkingBeat()
 
             // Build context from recent conversation
-            const context = container.messages
+            const context = category.messages
               .slice(-10)
-              .map((m) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
+              .map((m: Message) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
               .join("\n")
 
-            const messageId = addLocalResponse(containerId, "Creating a plan based on our conversation...", "claude")
-            playTTS(containerId, "Let me create a plan for that.", messageId)
+            const messageId = addLocalResponse(categoryId, "Creating a plan based on our conversation...", "claude")
+            playTTS(categoryId, "Let me create a plan for that.", messageId)
 
-            sendClaudePlanRequest(containerId, `Based on this conversation, create a detailed plan:\n\n${context}`)
+            sendClaudePlanRequest(categoryId, `Based on this conversation, create a detailed plan:\n\n${context}`)
             return true
           }
           return false
@@ -803,23 +821,22 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
         case "execute_task": {
           // Only works in Claude mode - plan and auto-execute
-          if (container?.activeAI === "claude") {
+          if (category?.activeAI === "claude") {
             stopThinkingBeat()
-            updatePendingMessage(containerId, "Do this")
+            updatePendingMessage(categoryId, "Do this")
             startThinkingBeat()
 
             // Build context from recent conversation
-            const context = container.messages
+            const context = category.messages
               .slice(-10)
-              .map((m) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
+              .map((m: Message) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
               .join("\n")
 
-            const messageId = addLocalResponse(containerId, "I'll create a plan and execute it...", "claude")
-            playTTS(containerId, "I'll work on that now.", messageId)
+            const messageId = addLocalResponse(categoryId, "I'll create a plan and execute it...", "claude")
+            playTTS(categoryId, "I'll work on that now.", messageId)
 
             // For now, just trigger planning - user can say "accept" after
-            // TODO: Auto-accept after plan is received
-            sendClaudePlanRequest(containerId, `Based on this conversation, create and execute a plan:\n\n${context}`)
+            sendClaudePlanRequest(categoryId, `Based on this conversation, create and execute a plan:\n\n${context}`)
             return true
           }
           return false
@@ -827,50 +844,50 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
         case "collect_context": {
           stopThinkingBeat()
-          updatePendingMessage(containerId, "Collect context")
+          updatePendingMessage(categoryId, "Collect context")
           startThinkingBeat()
 
-          dispatch({ type: "SET_AI", payload: { containerId, ai: "claude" } })
-          const messageId = addLocalResponse(containerId, "Scanning project...", "claude")
-          playTTS(containerId, "Let me explore this project.", messageId)
+          setAI(categoryId, "claude")
+          const messageId = addLocalResponse(categoryId, "Scanning project...", "claude")
+          playTTS(categoryId, "Let me explore this project.", messageId)
 
           wsRef.current?.send(JSON.stringify({
             type: "claude_collect_context",
-            containerId
+            containerId: categoryId
           }))
           return true
         }
 
         case "wipe_context": {
           stopThinkingBeat()
-          updatePendingMessage(containerId, null) // Remove the pending message
+          updatePendingMessage(categoryId, null) // Remove the pending message
 
           // Clear messages in UI
-          dispatch({ type: "CLEAR_MESSAGES", payload: { containerId } })
+          clearMessages(categoryId)
 
           // Clear backend session for all providers
           wsRef.current?.send(JSON.stringify({
             type: "clear_context",
-            containerId,
+            containerId: categoryId,
           }))
 
-          const messageId = addLocalResponse(containerId, "Context cleared. Starting fresh.", container?.activeAI)
-          playTTS(containerId, "Context cleared. Starting fresh.", messageId)
+          const messageId = addLocalResponse(categoryId, "Context cleared. Starting fresh.", category?.activeAI)
+          playTTS(categoryId, "Context cleared. Starting fresh.", messageId)
           return true
         }
 
         case "repeat_message": {
           stopThinkingBeat()
-          updatePendingMessage(containerId, command.rawText)
+          updatePendingMessage(categoryId, command.rawText)
 
           // Get assistant messages from history (excluding pending "...")
-          const assistantMessages = container?.messages.filter(
-            (msg) => msg.role === "assistant" && msg.text !== "..."
+          const assistantMessages = category?.messages.filter(
+            (msg: Message) => msg.role === "assistant" && msg.text !== "..."
           ) || []
 
           if (assistantMessages.length === 0) {
-            const messageId = addLocalResponse(containerId, "I haven't said anything yet.", container?.activeAI)
-            playTTS(containerId, "I haven't said anything yet.", messageId)
+            const messageId = addLocalResponse(categoryId, "I haven't said anything yet.", category?.activeAI)
+            playTTS(categoryId, "I haven't said anything yet.", messageId)
             return true
           }
 
@@ -881,24 +898,119 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           if (targetIndex < 0) {
             const available = assistantMessages.length
             const messageId = addLocalResponse(
-              containerId,
+              categoryId,
               `I only have ${available} message${available === 1 ? "" : "s"} in this conversation.`,
-              container?.activeAI
+              category?.activeAI
             )
-            playTTS(containerId, `I only have ${available} message${available === 1 ? "" : "s"} in this conversation.`, messageId)
+            playTTS(categoryId, `I only have ${available} message${available === 1 ? "" : "s"} in this conversation.`, messageId)
             return true
           }
 
           const targetMessage = assistantMessages[targetIndex]
 
           // Replay the TTS for the target message
-          playTTS(containerId, targetMessage.text, targetMessage.id)
+          playTTS(categoryId, targetMessage.text, targetMessage.id)
+          return true
+        }
+
+        case "stop_listening": {
+          // Exit listening mode entirely
+          stopThinkingBeat()
+          updatePendingMessage(categoryId, null)
+          listeningModeRef.current = false
+          setListeningMode(false)
+          vadRef.current?.pause()
+          vadRef.current?.destroy()
+          vadRef.current = null
+          setGlobalStatus("idle")
+          return true
+        }
+
+        case "send_now": {
+          // Process current buffer immediately without exiting listening mode
+          stopThinkingBeat()
+          updatePendingMessage(categoryId, null)
+          // Clear any pending buffer timeout
+          if (bufferTimeoutRef.current) {
+            clearTimeout(bufferTimeoutRef.current)
+            bufferTimeoutRef.current = null
+          }
+          processBufferedSpeech()
+          return true
+        }
+
+        case "create_category_with_name": {
+          if (command.categoryName) {
+            stopThinkingBeat()
+            updatePendingMessage(categoryId, command.rawText)
+
+            createCategory(command.categoryName).then((newCategory) => {
+              if (newCategory) {
+                selectCategory(newCategory.id)
+                navigateToView("chat")
+                const messageId = addLocalResponse(categoryId, `Created ${command.categoryName} category.`)
+                playTTS(categoryId, `Created ${command.categoryName}. How can I help?`, messageId)
+              }
+            })
+            return true
+          }
+          return false
+        }
+
+        case "manage_categories": {
+          // Navigate to category management view
+          stopThinkingBeat()
+          updatePendingMessage(categoryId, command.rawText)
+          navigateToView("management")
+          setNavigationRequest("management")
+          const messageId = addLocalResponse(categoryId, "Opening category management.", category?.activeAI)
+          playTTS(categoryId, "Opening category management.", messageId)
+          return true
+        }
+
+        case "list_categories": {
+          // Navigate to category list
+          stopThinkingBeat()
+          updatePendingMessage(categoryId, command.rawText)
+          navigateToView("list")
+          setNavigationRequest("list")
+          const categoryNames = currentCategories.map(c => c.name).join(", ")
+          const messageId = addLocalResponse(categoryId, `Your categories: ${categoryNames || "none yet"}.`, category?.activeAI)
+          playTTS(categoryId, `You have ${currentCategories.length} categories: ${categoryNames || "none yet"}.`, messageId)
+          return true
+        }
+
+        case "set_directory": {
+          // Set directory path for current category
+          if (command.directoryPath && categoryId) {
+            stopThinkingBeat()
+            updatePendingMessage(categoryId, command.rawText)
+            setDirectoryPath(categoryId, command.directoryPath)
+            const messageId = addLocalResponse(categoryId, `Directory set to: ${command.directoryPath}`, category?.activeAI)
+            playTTS(categoryId, `Directory linked to ${command.directoryPath}`, messageId)
+            return true
+          }
+          return false
+        }
+
+        case "list_directory": {
+          // List directory contents for the current category
+          stopThinkingBeat()
+          updatePendingMessage(categoryId, command.rawText)
+          startThinkingBeat()
+
+          // Send request to backend
+          wsRef.current?.send(JSON.stringify({
+            type: "list_directory",
+            categoryId,
+            directoryPath: category?.directoryPath
+          }))
           return true
         }
 
         case "ignored": {
           stopThinkingBeat()
-          updatePendingMessage(containerId, null)
+          updatePendingMessage(categoryId, null)
           setGlobalStatus("listening")
           return true
         }
@@ -908,10 +1020,10 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       }
     },
     [
+      state,
       dispatch,
-      createContainer,
-      switchToContainer,
-      deleteContainer,
+      selectCategory,
+      createCategory,
       stopThinkingBeat,
       startThinkingBeat,
       updatePendingMessage,
@@ -922,6 +1034,13 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       sendClaudePlanRequest,
       sendClaudeConfirm,
       sendClaudeDeny,
+      processBufferedSpeech,
+      getCategoryById,
+      findCategoryByName,
+      setAI,
+      clearMessages,
+      setDirectoryPath,
+      navigateToView,
     ]
   )
 
@@ -938,22 +1057,74 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      const containerId = data.containerId || activeContainerIdRef.current
-      const container = containersRef.current.get(containerId)
+      const categoryId = data.containerId || selectedCategoryIdRef.current
+      const category = getCategoryById(categoryId)
 
       if (data.type === "transcription") {
         const text = data.text
 
         // Filter out background noise / illegible transcriptions
         if (isLikelyNoise(text)) {
+          setIsProcessing(false)
+          return
+        }
+
+        // Handle global mode (no category selected) - parse for category creation
+        if (!selectedCategoryIdRef.current) {
+          console.log("Global mode transcription:", text)
+          stopThinkingBeat()
+
+          // Parse for category creation commands
+          // Matches: "create a category called work", "create a social category", "make a work category"
+          // Try specific "called/named" pattern first, then fallback to general pattern
+          const createMatch = text.match(/(?:create|make|new|add)\s+(?:a\s+)?(?:new\s+)?category\s+(?:called\s+|named\s+)(.+)/i) ||
+                              text.match(/(?:create|make|new|add)\s+(?:a\s+)?(?!new\s+category)(.+?)\s+category(?:\s|$)/i)
+
+          if (createMatch) {
+            const rawName = createMatch[1].trim()
+            // Capitalize first letter of each word
+            const categoryName = rawName
+              .split(/\s+/)
+              .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+              .join(" ")
+
+            console.log(`Creating category: "${categoryName}"`)
+
+            // Create the category and use the returned object directly
+            createCategory(categoryName).then((newCategory) => {
+              if (newCategory) {
+                selectCategory(newCategory.id)
+                // Manually sync ref so playTTS works immediately (React state hasn't propagated yet)
+                selectedCategoryIdRef.current = newCategory.id
+                navigateToView("chat")
+                // Use custom TTS service
+                playTTS(newCategory.id, `Created ${categoryName} category. How can I help?`, crypto.randomUUID())
+              }
+            })
+            skipNextResponseRef.current = true
+            setGlobalStatus("idle")
+            setIsProcessing(false)
+            return
+          }
+
+          // Not a category creation command - prompt user
+          // Use browser TTS since we have no category for proper TTS routing
+          const utterance = new SpeechSynthesisUtterance(
+            "Please create a category first. Say something like: create a work category."
+          )
+          window.speechSynthesis.speak(utterance)
+          setGlobalStatus("idle")
+          setIsProcessing(false)
+          skipNextResponseRef.current = true
           return
         }
 
         // Check for voice commands first
         const command = parseVoiceCommand(text)
-        if (command) {
-          const handled = handleVoiceCommand(command, containerId)
+        if (command && categoryId) {
+          const handled = handleVoiceCommand(command, categoryId)
           if (handled) {
+            setIsProcessing(false)
             skipNextResponseRef.current = true
             return
           }
@@ -961,46 +1132,57 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
         // Check for Claude direct address: "Claude, ..."
         const claudeAddress = parseClaudeDirectAddress(text)
-        if (claudeAddress) {
+        if (claudeAddress && categoryId) {
           stopThinkingBeat()
-          updatePendingMessage(containerId, text)
+          updatePendingMessage(categoryId, text)
           startThinkingBeat()
-          dispatch({ type: "SET_AI", payload: { containerId, ai: "claude" } })
+          setAI(categoryId, "claude")
           // Use chat mode for conversation (not planning)
-          sendClaudeChat(containerId, claudeAddress.prompt)
+          sendClaudeChat(categoryId, claudeAddress.prompt)
           skipNextResponseRef.current = true
           return
         }
 
         // Handle Claude mode exit
-        if (container?.activeAI === "claude" && isClaudeExitCommand(text)) {
+        if (category?.activeAI === "claude" && isClaudeExitCommand(text) && categoryId) {
           stopThinkingBeat()
-          dispatch({ type: "SET_AI", payload: { containerId, ai: "gemini" } })
-          updatePendingMessage(containerId, text)
-          const messageId = addLocalResponse(containerId, "Switched back to Gemini.", "gemini")
-          playTTS(containerId, "Switched back to Gemini.", messageId)
+          setAI(categoryId, "gemini")
+          updatePendingMessage(categoryId, text)
+          const messageId = addLocalResponse(categoryId, "Switched back to Gemini.", "gemini")
+          playTTS(categoryId, "Switched back to Gemini.", messageId)
+          setIsProcessing(false)
           skipNextResponseRef.current = true
           return
         }
 
-        // If in Local mode, route to Local LLM
-        if (container?.activeAI === "local") {
+        // If in Local mode, first check for app actions via intent detection
+        if (category?.activeAI === "local" && categoryId) {
           stopThinkingBeat()
-          updatePendingMessage(containerId, text)
+          updatePendingMessage(categoryId, text)
           startThinkingBeat()
+
+          // Build conversation history for context
+          const history = category.messages
+            .filter((m: Message) => m.text !== "...")
+            .slice(-10)
+            .map((m: Message) => ({ role: m.role, content: m.text }))
+
+          // Send action_request for intent detection
           wsRef.current?.send(JSON.stringify({
-            type: "local_request",
-            containerId,
+            type: "action_request",
+            categoryId,
             text,
+            history,
+            directoryPath: category.directoryPath,  // Context for file operations
           }))
           skipNextResponseRef.current = true
           return
         }
 
         // If in Claude mode, route to Claude
-        if (container?.activeAI === "claude") {
+        if (category?.activeAI === "claude" && categoryId) {
           stopThinkingBeat()
-          updatePendingMessage(containerId, text)
+          updatePendingMessage(categoryId, text)
           startThinkingBeat()
 
           // Check if this is an action request - route to planning instead of chat
@@ -1010,16 +1192,16 @@ export function useSharedVoice(): UseSharedVoiceReturn {
 
           if (isActionRequest) {
             // Action request - go straight to planning/execution
-            const messageId = addLocalResponse(containerId, "Working on that...", "claude")
-            playTTS(containerId, "Working on that.", messageId)
-            sendClaudePlanRequest(containerId, text)
+            const messageId = addLocalResponse(categoryId, "Working on that...", "claude")
+            playTTS(categoryId, "Working on that.", messageId)
+            sendClaudePlanRequest(categoryId, text)
           } else {
             // Discussion only - use chat mode
-            const context = container.messages
+            const context = category.messages
               .slice(-6)
-              .map((m) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
+              .map((m: Message) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
               .join("\n")
-            sendClaudeChat(containerId, text, context)
+            sendClaudeChat(categoryId, text, context)
           }
 
           skipNextResponseRef.current = true
@@ -1027,110 +1209,184 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         }
 
         // AI disabled check
-        if (aiDisabledRef.current) {
+        if (aiDisabledRef.current && categoryId) {
           stopThinkingBeat()
-          updatePendingMessage(containerId, text)
+          updatePendingMessage(categoryId, text)
           setGlobalStatus("listening")
+          setIsProcessing(false)
           skipNextResponseRef.current = true
           return
         }
 
         // Normal transcription - update pending message
-        updatePendingMessage(containerId, text)
-      } else if (data.type === "response") {
+        if (categoryId) {
+          updatePendingMessage(categoryId, text)
+        }
+      } else if (data.type === "response" && categoryId) {
         if (skipNextResponseRef.current) {
           skipNextResponseRef.current = false
           return
         }
 
+        setIsProcessing(false)
         thinkingAudioRef.current?.pitchUp()
 
         const messageId = crypto.randomUUID()
-        dispatch({
-          type: "ADD_MESSAGE",
-          payload: { containerId, message: { id: messageId, role: "assistant", text: data.text, source: "gemini" } },
-        })
-        dispatch({ type: "SET_STATUS", payload: { containerId, status: "speaking" } })
-        playTTS(containerId, data.text, messageId)
-      } else if (data.type === "claude_chat_response") {
+        const message: Message = { id: messageId, role: "assistant", text: data.text, source: "gemini" }
+        addMessage(categoryId, message)
+        setCategoryStatus(categoryId, "speaking")
+        playTTS(categoryId, data.text, messageId)
+      } else if (data.type === "claude_chat_response" && categoryId) {
         // Conversational Claude response
+        setIsProcessing(false)
         stopThinkingBeat()
         thinkingAudioRef.current?.pitchUp()
 
         const messageId = crypto.randomUUID()
-        dispatch({
-          type: "ADD_MESSAGE",
-          payload: { containerId, message: { id: messageId, role: "assistant", text: data.text, source: "claude" } },
-        })
-        dispatch({ type: "SET_STATUS", payload: { containerId, status: "speaking" } })
-        playTTS(containerId, data.text, messageId)
-      } else if (data.type === "local_response") {
+        const message: Message = { id: messageId, role: "assistant", text: data.text, source: "claude" }
+        addMessage(categoryId, message)
+        setCategoryStatus(categoryId, "speaking")
+        playTTS(categoryId, data.text, messageId)
+      } else if (data.type === "local_response" && categoryId) {
         // Local LLM response
+        setIsProcessing(false)
         stopThinkingBeat()
         thinkingAudioRef.current?.pitchUp()
 
         const messageId = crypto.randomUUID()
-        dispatch({
-          type: "ADD_MESSAGE",
-          payload: { containerId, message: { id: messageId, role: "assistant", text: data.text, source: "local" } },
-        })
-        dispatch({ type: "SET_STATUS", payload: { containerId, status: "speaking" } })
-        playTTS(containerId, data.text, messageId)
-      } else if (data.type === "local_error") {
+        const message: Message = { id: messageId, role: "assistant", text: data.text, source: "local" }
+        addMessage(categoryId, message)
+        setCategoryStatus(categoryId, "speaking")
+        playTTS(categoryId, data.text, messageId)
+      } else if (data.type === "local_error" && categoryId) {
         // Local LLM error
+        setIsProcessing(false)
         stopThinkingBeat()
         const errorText = data.error || "Local AI is not available."
-        const messageId = addLocalResponse(containerId, `Local error: ${errorText}`, "local")
-        playTTS(containerId, `Sorry, ${errorText}`, messageId)
-      } else if (data.type === "claude_context_collected") {
-        // Project context collected
+        const messageId = addLocalResponse(categoryId, `Local error: ${errorText}`, "local")
+        playTTS(categoryId, `Sorry, ${errorText}`, messageId)
+      } else if (data.type === "list_directory_response") {
+        // Directory listing response
+        setIsProcessing(false)
         stopThinkingBeat()
-        dispatch({
-          type: "SET_PROJECT_CONTEXT",
-          payload: { containerId, context: data.context }
-        })
+        const targetCategoryId = data.categoryId || categoryId
+        if (targetCategoryId) {
+          const messageId = addLocalResponse(targetCategoryId, data.message)
+          playTTS(targetCategoryId, data.message, messageId)
+        }
+      } else if (data.type === "claude_context_collected" && categoryId) {
+        // Project context collected
+        setIsProcessing(false)
+        stopThinkingBeat()
+        setProjectContext(categoryId, data.context)
         const shortContext = data.context.length > 200 ? data.context.slice(0, 200) + "..." : data.context
         const messageId = crypto.randomUUID()
-        dispatch({
-          type: "ADD_MESSAGE",
-          payload: { containerId, message: { id: messageId, role: "assistant", text: `Context collected:\n\n${shortContext}`, source: "claude" } },
-        })
-        dispatch({ type: "SET_STATUS", payload: { containerId, status: "speaking" } })
-        playTTS(containerId, "I've learned about this project. You can now ask me questions about it.", messageId)
-      } else if (data.type === "claude_plan") {
+        const message: Message = { id: messageId, role: "assistant", text: `Context collected:\n\n${shortContext}`, source: "claude" }
+        addMessage(categoryId, message)
+        setCategoryStatus(categoryId, "speaking")
+        playTTS(categoryId, "I've learned about this project. You can now ask me questions about it.", messageId)
+      } else if (data.type === "claude_plan" && categoryId) {
+        setIsProcessing(false)
         stopThinkingBeat()
-        dispatch({
-          type: "SET_CLAUDE_TASK",
-          payload: { containerId, task: { id: data.taskId, plan: data.plan } },
-        })
-        dispatch({ type: "SET_AI", payload: { containerId, ai: "claude" } })
+        dispatch({ type: "SET_CLAUDE_TASK", payload: { id: data.taskId, plan: data.plan } })
+        setAI(categoryId, "claude")
 
         const messageId = crypto.randomUUID()
         const displayText = `Claude's plan: ${data.plan}\n\nSay "accept" or "cancel".`
-        dispatch({
-          type: "ADD_MESSAGE",
-          payload: { containerId, message: { id: messageId, role: "assistant", text: displayText, source: "claude" } },
-        })
+        const message: Message = { id: messageId, role: "assistant", text: displayText, source: "claude" }
+        addMessage(categoryId, message)
 
         const shortPlan = data.plan.length > 300 ? data.plan.slice(0, 300) + "..." : data.plan
-        playTTS(containerId, `Here's my plan: ${shortPlan}. Do you want me to proceed?`, messageId)
-      } else if (data.type === "claude_running") {
-        const messageId = addLocalResponse(containerId, "Task started. I'll let you know when it's done.", "claude")
-        playTTS(containerId, "Task started. I'll let you know when it's done.", messageId)
-      } else if (data.type === "claude_complete") {
+        playTTS(categoryId, `Here's my plan: ${shortPlan}. Do you want me to proceed?`, messageId)
+      } else if (data.type === "claude_running" && categoryId) {
+        setIsProcessing(false)
+        const messageId = addLocalResponse(categoryId, "Task started. I'll let you know when it's done.", "claude")
+        playTTS(categoryId, "Task started. I'll let you know when it's done.", messageId)
+      } else if (data.type === "claude_complete" && categoryId) {
+        setIsProcessing(false)
         const resultText = data.result || "Task completed."
         const shortResult = resultText.length > 200 ? resultText.slice(0, 200) + "..." : resultText
 
-        const messageId = addLocalResponse(containerId, `Claude completed: ${resultText}`, "claude")
-        dispatch({ type: "SET_STATUS", payload: { containerId, status: "ready" } })
-        playTTS(containerId, `Task complete. ${shortResult}`, messageId)
-      } else if (data.type === "claude_denied") {
-        const messageId = addLocalResponse(containerId, "Task cancelled.", "claude")
-        playTTS(containerId, "Task cancelled.", messageId)
-      } else if (data.type === "claude_error") {
+        const messageId = addLocalResponse(categoryId, `Claude completed: ${resultText}`, "claude")
+        setCategoryStatus(categoryId, "ready")
+        playTTS(categoryId, `Task complete. ${shortResult}`, messageId)
+      } else if (data.type === "claude_denied" && categoryId) {
+        setIsProcessing(false)
+        const messageId = addLocalResponse(categoryId, "Task cancelled.", "claude")
+        playTTS(categoryId, "Task cancelled.", messageId)
+      } else if (data.type === "claude_error" && categoryId) {
+        setIsProcessing(false)
         const errorText = data.error || "An error occurred."
-        const messageId = addLocalResponse(containerId, `Claude error: ${errorText}`, "claude")
-        playTTS(containerId, `Sorry, there was an error: ${errorText}`, messageId)
+        const messageId = addLocalResponse(categoryId, `Claude error: ${errorText}`, "claude")
+        playTTS(categoryId, `Sorry, there was an error: ${errorText}`, messageId)
+      } else if (data.type === "action_result") {
+        // LLM intent detection result
+        const targetCategoryId = data.categoryId || categoryId
+
+        if (!data.isAction) {
+          // Not an app action - route to regular local LLM
+          // Note: isProcessing stays true until local_response comes back
+          wsRef.current?.send(JSON.stringify({
+            type: "local_request",
+            containerId: targetCategoryId,
+            text: data.text,
+          }))
+          return
+        }
+
+        // Handle app action
+        setIsProcessing(false)
+        stopThinkingBeat()
+        const result = data.result
+
+        if (result.action_type === "create_category" && targetCategoryId) {
+          // Create category action
+          const messageId = addLocalResponse(targetCategoryId, result.message, "local")
+          playTTS(targetCategoryId, result.message, messageId)
+
+          // Create the category using AppContext
+          if (result.category_name) {
+            createCategory(result.category_name)
+          }
+
+          if (result.navigate_to) {
+            navigateToView("management")
+            setNavigationRequest("management")
+          }
+        } else if (result.action_type === "link_directory" && targetCategoryId) {
+          // Link directory action - integrate with AppContext
+          const messageId = addLocalResponse(targetCategoryId, result.message, "local")
+          playTTS(targetCategoryId, result.message, messageId)
+
+          // Set directory path using AppContext
+          if (result.directory_path) {
+            setDirectoryPath(targetCategoryId, result.directory_path)
+          }
+        } else if (result.action_type === "navigate_category" && targetCategoryId) {
+          // Navigate to category
+          const messageId = addLocalResponse(targetCategoryId, result.message, "local")
+          playTTS(targetCategoryId, result.message, messageId)
+
+          // If a category was specified, select it
+          if (result.category_id) {
+            selectCategory(result.category_id)
+          }
+          navigateToView("list")
+          setNavigationRequest("list")
+        } else if ((result.action_type === "find_directory" || result.action_type === "list_directories") && targetCategoryId) {
+          // Directory search results
+          let response = result.message
+          if (result.directory_matches?.length) {
+            const names = result.directory_matches.slice(0, 3).map((m: { name: string }) => m.name).join(", ")
+            response = `${result.message}: ${names}`
+          }
+          const messageId = addLocalResponse(targetCategoryId, response, "local")
+          playTTS(targetCategoryId, response, messageId)
+        } else if (targetCategoryId) {
+          // Unknown action type - just announce
+          const messageId = addLocalResponse(targetCategoryId, result.message || "Action completed.", "local")
+          playTTS(targetCategoryId, result.message || "Done.", messageId)
+        }
       }
     }
 
@@ -1138,11 +1394,13 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       setError("WebSocket connection failed. Is the backend running?")
       setGlobalStatus("idle")
       setIsConnected(false)
+      setIsProcessing(false)
     }
 
     ws.onclose = () => {
       console.log("WebSocket closed, reconnecting...")
       setIsConnected(false)
+      setIsProcessing(false)
       setTimeout(connectWebSocket, 3000)
     }
 
@@ -1156,29 +1414,17 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     addLocalResponse,
     playTTS,
     sendClaudeChat,
+    getCategoryById,
+    setAI,
+    addMessage,
+    setCategoryStatus,
+    setProjectContext,
+    createCategory,
+    setDirectoryPath,
+    selectCategory,
+    navigateToView,
+    sendClaudePlanRequest,
   ])
-
-  // Process buffered speech - called after buffer delay
-  const processBufferedSpeech = useCallback(() => {
-    if (speechBufferRef.current.length === 0) return
-    if (wsRef.current?.readyState !== WebSocket.OPEN) {
-      console.log("WebSocket not ready, clearing buffer")
-      speechBufferRef.current = []
-      return
-    }
-
-    const containerId = activeContainerIdRef.current
-    console.log(`Processing ${speechBufferRef.current.length} buffered speech segment(s)`)
-
-    // Concatenate all buffered audio
-    const combinedAudio = concatenateAudioBuffers(speechBufferRef.current)
-    speechBufferRef.current = []
-
-    // Encode and send audio with container ID
-    const wavBuffer = encodeWAV(combinedAudio, 16000)
-    wsRef.current?.send(JSON.stringify({ type: "audio_meta", containerId }))
-    wsRef.current?.send(wavBuffer)
-  }, [concatenateAudioBuffers])
 
   const start = useCallback(async () => {
     if (!window.vad) {
@@ -1186,8 +1432,15 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       return
     }
 
+    // Stop any playing TTS immediately when user taps to listen
+    stopAudio()
+
+    // Enable toggle/listening mode
+    listeningModeRef.current = true
+    setListeningMode(true)
+
     setIsLoading(true)
-    console.log("Starting voice chat...")
+    console.log("Starting voice chat (toggle mode)...")
 
     try {
       connectWebSocket()
@@ -1204,38 +1457,23 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           }
         },
         onSpeechEnd: (audio) => {
-          console.log("Speech ended, buffering...")
+          console.log("Speech ended, buffering (manual send mode)...")
 
-          const containerId = activeContainerIdRef.current
+          const catId = selectedCategoryIdRef.current
           const isFirstSegment = speechBufferRef.current.length === 0
 
           // Add audio to buffer
           speechBufferRef.current.push(audio)
+          setHasBufferedSpeech(true)
 
-          // Only add pending message and start thinking beat on first segment
-          if (isFirstSegment) {
-            dispatch({
-              type: "ADD_MESSAGE",
-              payload: {
-                containerId,
-                message: { id: crypto.randomUUID(), role: "user", text: "..." },
-              },
-            })
-            setGlobalStatus("processing")
-            dispatch({ type: "SET_STATUS", payload: { containerId, status: "processing" } })
-            startThinkingBeat()
+          // Add pending message if we have a category, otherwise just buffer
+          // (global mode will handle transcription for category creation)
+          if (isFirstSegment && catId) {
+            const message: Message = { id: crypto.randomUUID(), role: "user", text: "..." }
+            addMessage(catId, message)
           }
-
-          // Clear any existing timeout
-          if (bufferTimeoutRef.current) {
-            clearTimeout(bufferTimeoutRef.current)
-          }
-
-          // Set new timeout - process after delay if no more speech
-          bufferTimeoutRef.current = setTimeout(() => {
-            bufferTimeoutRef.current = null
-            processBufferedSpeech()
-          }, BUFFER_DELAY_MS)
+          // Stay in listening state - user will click stop to send
+          setGlobalStatus("listening")
         },
         onVADMisfire: () => {
           console.log("VAD misfire (too short)")
@@ -1251,24 +1489,50 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       setError(`VAD error: ${err instanceof Error ? err.message : String(err)}`)
       setIsLoading(false)
     }
-  }, [connectWebSocket, startThinkingBeat, stopAudio, dispatch, processBufferedSpeech])
+  }, [connectWebSocket, startThinkingBeat, stopAudio, addMessage, processBufferedSpeech])
 
   const stop = useCallback(() => {
-    console.log("Stopping voice chat (listening only)...")
-    // Only stop VAD/listening - let audio and processing continue
+    console.log("Stopping voice chat and sending...")
+
+    // Disable listening mode
+    listeningModeRef.current = false
+    setListeningMode(false)
+
+    // Stop VAD
     vadRef.current?.pause()
     vadRef.current?.destroy()
     vadRef.current = null
 
-    // Clear any pending buffer timeout and process remaining speech
+    // Clear any pending buffer timeout
     if (bufferTimeoutRef.current) {
       clearTimeout(bufferTimeoutRef.current)
       bufferTimeoutRef.current = null
-      processBufferedSpeech()
     }
 
-    setGlobalStatus("idle")
-    // Do NOT close WebSocket or stop thinking beat - actions continue
+    // Process buffered speech if any exists
+    if (speechBufferRef.current.length > 0) {
+      setGlobalStatus("processing")
+      startThinkingBeat()
+      processBufferedSpeech()
+    } else {
+      // No speech to process - just go idle
+      setGlobalStatus("idle")
+    }
+    // Do NOT close WebSocket - actions continue
+  }, [processBufferedSpeech, startThinkingBeat])
+
+  // Process current buffer immediately without exiting listening mode
+  const processNow = useCallback(() => {
+    console.log("Processing speech buffer now...")
+
+    // Clear any pending buffer timeout
+    if (bufferTimeoutRef.current) {
+      clearTimeout(bufferTimeoutRef.current)
+      bufferTimeoutRef.current = null
+    }
+
+    // Process whatever is in the buffer
+    processBufferedSpeech()
   }, [processBufferedSpeech])
 
   // Send text message (simulates transcription flow for typed input)
@@ -1281,23 +1545,20 @@ export function useSharedVoice(): UseSharedVoiceReturn {
       connectWebSocket()
     }
 
-    const containerId = activeContainerIdRef.current
-    const container = containersRef.current.get(containerId)
+    const categoryId = selectedCategoryIdRef.current
+    const category = getCategoryById(categoryId)
+
+    if (!categoryId) return
 
     // Add user message to UI
     const userMessageId = crypto.randomUUID()
-    dispatch({
-      type: "ADD_MESSAGE",
-      payload: {
-        containerId,
-        message: { id: userMessageId, role: "user", text: trimmed },
-      },
-    })
+    const userMessage: Message = { id: userMessageId, role: "user", text: trimmed }
+    addMessage(categoryId, userMessage)
 
     // Check for voice commands
     const command = parseVoiceCommand(trimmed)
     if (command) {
-      const handled = handleVoiceCommand(command, containerId)
+      const handled = handleVoiceCommand(command, categoryId)
       if (handled) return
     }
 
@@ -1305,64 +1566,72 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     const claudeAddress = parseClaudeDirectAddress(trimmed)
     if (claudeAddress) {
       startThinkingBeat()
-      dispatch({ type: "SET_AI", payload: { containerId, ai: "claude" } })
-      sendClaudeChat(containerId, claudeAddress.prompt)
+      setAI(categoryId, "claude")
+      sendClaudeChat(categoryId, claudeAddress.prompt)
       return
     }
 
     // Handle Claude mode exit
-    if (container?.activeAI === "claude" && isClaudeExitCommand(trimmed)) {
-      dispatch({ type: "SET_AI", payload: { containerId, ai: "gemini" } })
-      const messageId = addLocalResponse(containerId, "Switched back to Gemini.", "gemini")
-      playTTS(containerId, "Switched back to Gemini.", messageId)
+    if (category?.activeAI === "claude" && isClaudeExitCommand(trimmed)) {
+      setAI(categoryId, "gemini")
+      const messageId = addLocalResponse(categoryId, "Switched back to Gemini.", "gemini")
+      playTTS(categoryId, "Switched back to Gemini.", messageId)
       return
     }
 
     // Start processing
     setGlobalStatus("processing")
-    dispatch({ type: "SET_STATUS", payload: { containerId, status: "processing" } })
+    setCategoryStatus(categoryId, "processing")
     startThinkingBeat()
 
     // Route to appropriate AI
-    if (container?.activeAI === "local") {
+    if (category?.activeAI === "local") {
       wsRef.current?.send(JSON.stringify({
         type: "local_request",
-        containerId,
+        containerId: categoryId,
         text: trimmed,
       }))
-    } else if (container?.activeAI === "claude") {
+    } else if (category?.activeAI === "claude") {
       // Check if action request
       const actionWords = ["create", "make", "write", "fix", "run", "delete", "update", "add", "remove", "install", "build", "edit", "change", "modify"]
       const lowerText = trimmed.toLowerCase()
       const isActionRequest = actionWords.some((word) => lowerText.includes(word))
 
       if (isActionRequest) {
-        sendClaudePlanRequest(containerId, trimmed)
+        sendClaudePlanRequest(categoryId, trimmed)
       } else {
-        const context = container.messages
+        const context = category.messages
           .slice(-6)
-          .map((m) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
+          .map((m: Message) => `${m.role === "user" ? "User" : "Claude"}: ${m.text}`)
           .join("\n")
-        sendClaudeChat(containerId, trimmed, context)
+        sendClaudeChat(categoryId, trimmed, context)
       }
     } else {
       // Gemini
       wsRef.current?.send(JSON.stringify({
         type: "gemini_request",
-        containerId,
+        containerId: categoryId,
         text: trimmed,
       }))
     }
   }, [
     connectWebSocket,
-    dispatch,
+    getCategoryById,
+    addMessage,
     handleVoiceCommand,
     startThinkingBeat,
     addLocalResponse,
     playTTS,
     sendClaudeChat,
     sendClaudePlanRequest,
+    setAI,
+    setCategoryStatus,
   ])
+
+  // Auto-connect WebSocket on mount so isConnected is true before user interaction
+  useEffect(() => {
+    connectWebSocket()
+  }, [connectWebSocket])
 
   useEffect(() => {
     return () => {
@@ -1380,9 +1649,15 @@ export function useSharedVoice(): UseSharedVoiceReturn {
     isConnected,
     isLoading,
     error,
+    listeningMode,
+    hasBufferedSpeech,
+    isProcessing,
+    navigationRequest,
+    clearNavigationRequest,
     start,
     stop,
     stopAudio,
+    processNow,
     sendClaudeConfirm,
     sendClaudeDeny,
     saveChat,

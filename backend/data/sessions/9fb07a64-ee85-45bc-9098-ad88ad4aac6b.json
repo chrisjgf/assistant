@@ -1,0 +1,28 @@
+{
+  "id": "9fb07a64-ee85-45bc-9098-ad88ad4aac6b",
+  "createdAt": "2026-01-20T11:52:58.172824Z",
+  "updatedAt": "2026-01-20T11:52:58.234445Z",
+  "activeMode": "todo",
+  "todoCategories": [],
+  "brainCategories": [],
+  "containers": {
+    "main": {
+      "messages": [
+        {
+          "id": "e53ed6f1-662b-4f1c-ac16-761b1c4c1ddc",
+          "role": "user",
+          "text": "Hello, how are you doing today?"
+        },
+        {
+          "id": "a9153d32-84bf-4420-aaee-d880cdf776c2",
+          "role": "assistant",
+          "text": "Hello there! I'm doing well, thank you for asking. It's nice to meet you! How are you doing today?",
+          "source": "local"
+        }
+      ],
+      "activeAI": "local",
+      "projectContext": null,
+      "branch": null
+    }
+  }
+}

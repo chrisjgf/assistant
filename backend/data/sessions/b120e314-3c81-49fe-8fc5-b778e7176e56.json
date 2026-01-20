@@ -1,0 +1,103 @@
+{
+  "id": "b120e314-3c81-49fe-8fc5-b778e7176e56",
+  "createdAt": "2026-01-20T11:52:58.220807Z",
+  "updatedAt": "2026-01-20T15:43:18.936015Z",
+  "activeMode": "todo",
+  "todoCategories": [],
+  "brainCategories": [],
+  "containers": {
+    "main": {
+      "messages": [
+        {
+          "id": "e53ed6f1-662b-4f1c-ac16-761b1c4c1ddc",
+          "role": "user",
+          "text": "Hello, how are you doing today?"
+        },
+        {
+          "id": "a9153d32-84bf-4420-aaee-d880cdf776c2",
+          "role": "assistant",
+          "text": "Hello there! I'm doing well, thank you for asking. It's nice to meet you! How are you doing today?",
+          "source": "local"
+        },
+        {
+          "id": "85cea8cc-11bf-407c-bb2d-9d0f65ca8657",
+          "role": "user",
+          "text": "Create a new container called social and hook it up to a social folder in the development working folder"
+        },
+        {
+          "id": "f2238bbc-b69e-419a-bd21-9fa7a71dea6e",
+          "role": "assistant",
+          "text": "Based on the search results, I can help you create a container called \"social\" connected to a social folder in your development environment. Here's how you can approach this:\n\nIf you're using Docker, you would typically create a Dockerfile in your social folder and then build a container from it. You'd want to set up a volume mount so that changes in your local social folder are reflected in the container.\n\nFor a more specific approach, could you clarify what type of development environment you're working with? Are you using Docker, or are you looking to set up a specific framework like Firebase, WordPress, or a Python/PyCharm environment? This will help me give you more targeted instructions for your setup.",
+          "source": "local"
+        },
+        {
+          "id": "95059199-edef-4f4f-9819-9240f2f28550",
+          "role": "user",
+          "text": "No, I want to create a new category called social in this app."
+        },
+        {
+          "id": "6b55d7e9-83cd-456f-a1cf-cfda1666804c",
+          "role": "assistant",
+          "text": "I understand now! You want to create a new category called \"social\" in your app. However, I don't have access to your specific app or its codebase, so I can't directly create this for you. \n\nTo help you create a new \"social\" category, I'd need to know what type of app you're working with - is it a web app, mobile app, or something else? The process would vary depending on your app's framework and technology stack. Could you provide more details about your app's platform or development environment?",
+          "source": "local"
+        },
+        {
+          "id": "a1f5fa35-ee06-4507-914f-488e083003e6",
+          "role": "user",
+          "text": "..."
+        },
+        {
+          "id": "747f74c1-cdcc-43cd-81b2-908c4821c2b8",
+          "role": "user",
+          "text": "..."
+        },
+        {
+          "id": "c358e109-9d49-416a-998d-3177877e35c4",
+          "role": "user",
+          "text": "Hi there, how are you doing today?"
+        },
+        {
+          "id": "4460f6d3-03a7-457e-b26c-692b1d1e9388",
+          "role": "assistant",
+          "text": "Hello again! I'm doing well, thank you for asking. It's nice to chat with you today! How are you doing?",
+          "source": "local"
+        },
+        {
+          "id": "d33eaa0e-7893-4b17-b2ca-aa7b52b3e74e",
+          "role": "user",
+          "text": "..."
+        },
+        {
+          "id": "732d85a7-792b-48d3-b60f-9653d57ed699",
+          "role": "user",
+          "text": "Bye, Ben."
+        },
+        {
+          "id": "0ca626ea-fd87-44c7-8085-51a243de8b4c",
+          "role": "assistant",
+          "text": "Goodbye! It was nice chatting with you. Take care, and have a wonderful day!",
+          "source": "local"
+        },
+        {
+          "id": "2f91b518-b2e3-4ecf-bd6a-b7b1cc7cd7cd",
+          "role": "user",
+          "text": "create a new social container and hook it up to the social directory under development"
+        },
+        {
+          "id": "67fff2b8-a1f9-449a-8f3b-aedf254290fd",
+          "role": "assistant",
+          "text": "To create a new social container and connect it to your social directory under development, you'll want to use Docker. Here's how you can approach this:\n\nFirst, navigate to your development directory and ensure you have a social folder there. Then create a Dockerfile in that directory with the appropriate configuration for your social application. You'd typically use a command like:\n\ndocker build -t social-container .\n\nThen to run it with the directory mounted:\n\ndocker run -v $(pwd)/social:/app social-container\n\nThis would mount your local social directory to the container's app directory. Make sure your Dockerfile is properly configured for your specific social application requirements.",
+          "source": "local"
+        },
+        {
+          "id": "7add1c8b-ba92-4313-b972-9d0251d82a77",
+          "role": "user",
+          "text": "..."
+        }
+      ],
+      "activeAI": "local",
+      "projectContext": null,
+      "branch": null
+    }
+  }
+}

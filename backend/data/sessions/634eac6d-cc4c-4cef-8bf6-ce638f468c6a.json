@@ -1,0 +1,34 @@
+{
+  "id": "634eac6d-cc4c-4cef-8bf6-ce638f468c6a",
+  "createdAt": "2026-01-20T13:14:10.311129Z",
+  "updatedAt": "2026-01-20T15:02:00.748700Z",
+  "activeMode": "todo",
+  "todoCategories": [
+    {
+      "id": "396e6ea1-77a1-423e-b644-9506b74585f8",
+      "name": "Social",
+      "order": 0,
+      "tasks": [],
+      "messages": [],
+      "activeAI": "local",
+      "directoryPath": null,
+      "status": "idle",
+      "projectContext": null,
+      "speakingId": null
+    },
+    {
+      "id": "7c312180-40fd-4260-9f36-6429aaa40533",
+      "name": "New",
+      "order": 1,
+      "tasks": [],
+      "messages": [],
+      "activeAI": "local",
+      "directoryPath": null,
+      "status": "idle",
+      "projectContext": null,
+      "speakingId": null
+    }
+  ],
+  "brainCategories": [],
+  "containers": {}
+}

@@ -1,65 +1,151 @@
-# Voice Assistant
+# Speaker
 
-A voice-controlled AI assistant with support for multiple AI providers and concurrent chat sessions.
+A voice assistant application with multi-container support, session persistence, and AI integration.
 
 ## Features
 
-- **Voice Interaction** - Speak naturally, get spoken responses via custom TTS
-- **Multiple AI Providers** - Switch between Gemini, Claude, and Local LLM (Ollama)
-- **Chat Containers** - Run up to 5 independent conversations simultaneously
-- **Voice Commands** - Control the app hands-free ("switch to Claude", "create container", etc.)
-- **Claude Code Integration** - Execute code tasks with planning/approval workflow
+- Multi-container voice chat with separate AI contexts
+- Session persistence with auto-save
+- Task queue system with cancellation
+- Git worktree support for multi-branch development
+- Voice command parsing and execution
+- WebSocket-based real-time communication
 
-## Quick Start
+## Getting Started
 
-1. **Setup environment**
+### Prerequisites
+
+- Node.js >= 16
+- Python 3.8+
+- Ollama (for local LLM)
+- Google Cloud account (for Gemini API)
+
+### Installation
+
+1. Clone the repository
+2. Install backend dependencies:
    ```bash
-   cp .env.example .env
-   # Edit .env with your GEMINI_API_KEY
+   cd backend
+   pip install -r requirements.txt
+   ```
+3. Install frontend dependencies:
+   ```bash
+   cd frontend
+   npm install
    ```
 
-2. **Generate SSL certificates** (required for microphone access)
+### Running the Application
+
+1. Start the backend:
    ```bash
-   mkdir -p certs
-   openssl req -x509 -newkey rsa:4096 -keyout certs/key.pem -out certs/cert.pem -days 365 -nodes
+   ./start.sh backend
+   ```
+2. Start the frontend:
+   ```bash
+   ./start.sh frontend
    ```
 
-3. **Start all services**
-   ```bash
-   ./start.sh
-   ```
+### Voice Commands
 
-4. Open `https://localhost:5173` in your browser
+The application supports various voice commands for controlling the assistant:
 
-## Requirements
+- "switch to branch X" - Switch to a specific git branch
+- "list branches" - List available git branches
+- "cancel task" - Cancel the current task
+- "queue status" - Show current task queue status
+- "clear queue" - Clear the task queue
+- "hallelujah" - Respond with "hallelujah" (new feature)
 
-- Python 3.11+ with CUDA support
-- Node.js 18+ or Bun
-- NVIDIA GPU (for Whisper STT and TTS)
-- Optional: Ollama (for local LLM), Claude CLI (for code tasks)
-
-## Voice Commands
-
-| Command | Action |
-|---------|--------|
-| "Switch to Claude/Gemini/Local" | Change AI provider |
-| "Switch to container A" | Change active container |
-| "Create container" | Create new chat session |
-| "Accept" / "Cancel" | Approve/deny Claude task |
-| "Save chat" | Download conversation as JSON |
-
-## Architecture
+## Project Structure
 
 ```
-frontend/          React + Vite + TailwindCSS
-backend/           FastAPI + WebSocket
+backend/
+  main.py                    # FastAPI app, WebSocket /ws, REST endpoints
   services/
-    whisper_service.py   STT (faster-whisper)
-    tts_service.py       TTS (Chatterbox)
-    claude_service.py    Claude CLI integration
-    ai/                  AI provider abstraction
+    whisper_service.py       # STT: faster-whisper large-v3
+    tts_service.py           # TTS: Chatterbox with voice cloning
+    claude_service.py        # Claude CLI wrapper (chat + planning modes)
+    session_service.py       # Session persistence (JSON files)
+    task_queue.py            # Per-container FIFO task queues
+    git_service.py           # Git worktree management
+    ai/
+      base.py                # AIProvider abstract base
+      gemini.py              # Google Gemini
+      local.py               # Ollama + DuckDuckGo search
+  data/
+    sessions/                # Session JSON files (auto-created)
+
+frontend/src/
+  context/ContainerContext.tsx   # State: 5 containers (main, a-d), session integration
+  hooks/
+    useSharedVoice.ts            # Core: VAD, WebSocket, TTS, commands
+    useSession.ts                # Session persistence management
+    useTaskQueue.ts              # Task queue management
+    useGitWorktree.ts            # Git worktree management
+    useVoiceChat.ts              # Legacy hook
+  utils/
+    voiceCommands.ts             # Command parsing
+    sessionStorage.ts            # localStorage wrapper
+  components/
+    ChatView.tsx                 # Messages with TTS playback
+    ContainerTabs.tsx            # Tab navigation
+    StatusIndicator.tsx          # Status display
+```
+
+## Development
+
+### Adding New Voice Commands
+
+To add a new voice command:
+1. Add the command pattern to `frontend/src/utils/voiceCommands.ts`
+2. Implement the command handler in `frontend/src/hooks/useSharedVoice.ts`
+3. Update the README documentation
+
+### Adding New AI Providers
+
+To add a new AI provider:
+1. Create a new class that inherits from `AIProvider` in `backend/services/ai/`
+2. Implement the required methods: `get_response`, `reset_chat`, and `set_history`
+3. Register the provider in `backend/main.py`
+
+### Session Management
+
+Sessions are automatically saved to `backend/data/sessions/` with UUID tokens. The frontend uses localStorage for temporary session data.
+
+### Task Queue
+
+Each container has its own task queue. Tasks are processed in FIFO order with support for cancellation.
+
+### Git Worktree Support
+
+The application supports multi-branch development using git worktrees. Commands include:
+- `GET /git/branches` - List available branches
+- `POST /git/worktree` - Create a new worktree
+- `DELETE /git/worktree/{branch}` - Remove a worktree
+
+## API Endpoints
+
+- `GET /` - Main page
+- `GET /ws` - WebSocket connection for voice chat
+- `GET /sessions` - List all sessions
+- `GET /sessions/{id}` - Get a specific session
+- `POST /sessions` - Create a new session
+- `PUT /sessions/{id}` - Update a session
+- `DELETE /sessions/{id}` - Delete a session
+- `GET /git/branches` - List git branches
+- `POST /git/worktree` - Create git worktree
+- `DELETE /git/worktree/{branch}` - Delete git worktree
+
+## Environment Variables
+
+Create a `.env` file in the root directory with the following variables:
+
+```
+GEMINI_API_KEY=your_gemini_api_key_here
+LOCAL_LLM_MODEL=qwen3-coder-256k
+CLAUDE_WORK_DIR=/path/to/claudeworkdir
 ```
 
 ## License
 
-MIT
+This project is licensed under the MIT License.

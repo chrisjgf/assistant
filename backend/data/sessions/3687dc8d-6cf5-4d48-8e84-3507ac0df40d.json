@@ -1,0 +1,102 @@
+{
+  "id": "3687dc8d-6cf5-4d48-8e84-3507ac0df40d",
+  "createdAt": "2026-01-20T15:08:40.500954Z",
+  "updatedAt": "2026-01-20T15:23:39.261316Z",
+  "activeMode": "todo",
+  "todoCategories": [
+    {
+      "id": "4a6ff41e-bb71-4f58-ad40-a9e29825a059",
+      "name": "Social",
+      "order": 0,
+      "tasks": [],
+      "messages": [
+        {
+          "id": "7ebf1b46-2938-4487-963e-909ee3bfdeb4",
+          "role": "user",
+          "text": "link this category to the social category, social project"
+        },
+        {
+          "id": "6e57d08e-6aa9-4523-93a5-44e1f5c8c2fb",
+          "role": "assistant",
+          "text": "Linked to social",
+          "source": "local"
+        },
+        {
+          "id": "bb512f97-fb0e-4a51-b804-dba23f5b03c7",
+          "role": "user",
+          "text": "List the FIWAS in this project"
+        },
+        {
+          "id": "28ca2356-1b5b-4003-bd05-74d5c488962d",
+          "role": "assistant",
+          "text": "Found 12 directories: data, logs, public, icons, skills and 7 more: data, logs, public",
+          "source": "local"
+        }
+      ],
+      "activeAI": "local",
+      "directoryPath": "/home/x01/dev/social",
+      "status": "idle",
+      "projectContext": null,
+      "speakingId": null
+    },
+    {
+      "id": "848b5288-d64d-41e9-9729-03089ae34c03",
+      "name": "System",
+      "order": 1,
+      "tasks": [],
+      "messages": [
+        {
+          "id": "f31d7861-fa5b-4760-9b70-e7b246621d8d",
+          "role": "user",
+          "text": "Link this category to the assistant project"
+        },
+        {
+          "id": "6e0c2c72-14c7-4b5f-8411-bf5196264e4f",
+          "role": "assistant",
+          "text": "Linked to assistant",
+          "source": "local"
+        },
+        {
+          "id": "ff45fcc2-e0d4-4858-84e9-706caa13de1b",
+          "role": "user",
+          "text": "create a new file in this directory called test.md, inside it it should say hello wild"
+        },
+        {
+          "id": "a84beca4-2e6d-4b0d-848c-edc0d9a724e2",
+          "role": "assistant",
+          "text": "I'll create a new file called test.md with the content \"hello wild\" in the current directory.\n\n<function=write_file>\n<parameter=path>\ntest.md\n</parameter>\n<parameter=content>\nhello wild\n</parameter>\n</function>\n</tool_call>",
+          "source": "local"
+        },
+        {
+          "id": "56d46f36-9148-494f-8da5-b07eba9b4113",
+          "role": "user",
+          "text": "Great, thank you."
+        },
+        {
+          "id": "262fda71-f9f7-4638-8555-551334662c3d",
+          "role": "assistant",
+          "text": "You're welcome! Is there anything else you'd like me to help you with?",
+          "source": "local"
+        },
+        {
+          "id": "648d8769-ebce-45bc-969f-de8b77c583cd",
+          "role": "user",
+          "text": "create a file called test.md, inside of it put in hello world"
+        },
+        {
+          "id": "48c43559-7966-44cc-ab29-6175cede8935",
+          "role": "assistant",
+          "text": "I'll create a file called test.md with the content \"hello world\".\n\n<function=write_file>\n<parameter=path>\ntest.md\n</parameter>\n<parameter=content>\nhello world\n</parameter>\n</function>\n</tool_call>",
+          "source": "local"
+        }
+      ],
+      "activeAI": "local",
+      "directoryPath": "/home/x01/dev/assistant",
+      "status": "idle",
+      "projectContext": null,
+      "speakingId": null
+    }
+  ],
+  "brainCategories": [],
+  "containers": {}
+}

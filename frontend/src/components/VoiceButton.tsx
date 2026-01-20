@@ -104,20 +104,14 @@ export function VoiceButton({
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
   }
 
-  // Determine button state
-  let buttonState: "idle" | "recording" | "loading" | "disconnected" | "processing"
-
-  if (!isConnected) {
-    buttonState = "disconnected"
-  } else if (isLoading) {
-    buttonState = "loading"
-  } else if (isProcessing) {
-    buttonState = "processing"
-  } else if (isActive) {
-    buttonState = "recording"
-  } else {
-    buttonState = "idle"
-  }
+  // Determine button state using explicit conditions for clarity
+  const buttonState = (() => {
+    if (!isConnected) return "disconnected"
+    if (isLoading) return "loading"
+    if (isProcessing) return "processing"
+    if (isActive) return "recording"
+    return "idle"
+  })() as "idle" | "recording" | "loading" | "disconnected" | "processing"
 
   // Processing spinner SVG
   const ProcessingSpinner = () => (
@@ -155,16 +149,18 @@ export function VoiceButton({
   }
 
   // Label for non-compact mode
-  const getLabel = (): string | null => {
+  const label = (() => {
     if (compact) return null
-    if (buttonState === "disconnected") return "Disconnected"
-    if (buttonState === "loading") return "Connecting..."
-    if (buttonState === "processing") return "Processing..."
-    if (isActive) return formatTime(elapsedTime)
-    return null // No label for idle state (BUG-003 fix)
-  }
 
-  const label = getLabel()
+    const labels: Record<string, string | null> = {
+      disconnected: "Disconnected",
+      loading: "Connecting...",
+      processing: "Processing...",
+      recording: formatTime(elapsedTime),
+      idle: null,
+    }
+    return labels[buttonState] ?? null
+  })()
 
   return (
     <div className={`voice-controls ${compact ? "voice-controls--compact" : ""} ${className}`}>

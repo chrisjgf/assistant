@@ -32,6 +32,24 @@ const VALID_SHORT_WORDS = new Set([
   "a", "i", "k", "ok", "go", "no", "yes", "hi", "hey", "bye", "do", "so", "to", "on", "in", "up", "it", "is", "be", "we", "me", "my", "an", "or", "if", "at", "as", "by", "of"
 ])
 
+// AI provider display names
+const AI_DISPLAY_NAMES: Record<string, string> = {
+  gemini: "Gemini",
+  claude: "Claude",
+  local: "Local",
+}
+
+// Action words that indicate a Claude task request (vs. conversation)
+const ACTION_WORDS = new Set([
+  "create", "make", "write", "fix", "run", "delete", "update",
+  "add", "remove", "install", "build", "edit", "change", "modify"
+])
+
+function isActionRequest(text: string): boolean {
+  const words = text.toLowerCase().split(/\s+/)
+  return words.some((word) => ACTION_WORDS.has(word))
+}
+
 /**
  * Check if transcription is likely background noise or illegible speech.
  * Conservative approach: only filter obvious garbage, allow valid short words.
@@ -68,19 +86,23 @@ function isLikelyNoise(text: string): boolean {
  * Preserves readable text while removing formatting syntax.
  */
 function stripMarkdown(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, " code block ")  // Code blocks
-    .replace(/`([^`]+)`/g, "$1")                  // Inline code
-    .replace(/\*\*([^*]+)\*\*/g, "$1")            // Bold
-    .replace(/\*([^*]+)\*/g, "$1")                // Italic
-    .replace(/__([^_]+)__/g, "$1")                // Bold alt
-    .replace(/_([^_]+)_/g, "$1")                  // Italic alt
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")      // Links
-    .replace(/^#+\s+/gm, "")                      // Headers
-    .replace(/^[-*+]\s+/gm, "")                   // List items
-    .replace(/^>\s+/gm, "")                       // Blockquotes
-    .replace(/^---+$/gm, "")                      // Horizontal rules
-    .trim()
+  const replacements: [RegExp, string][] = [
+    [/```[\s\S]*?```/g, " code block "],  // Code blocks
+    [/`([^`]+)`/g, "$1"],                  // Inline code
+    [/\*\*([^*]+)\*\*/g, "$1"],            // Bold
+    [/\*([^*]+)\*/g, "$1"],                // Italic
+    [/__([^_]+)__/g, "$1"],                // Bold alt
+    [/_([^_]+)_/g, "$1"],                  // Italic alt
+    [/\[([^\]]+)\]\([^)]+\)/g, "$1"],      // Links
+    [/^#+\s+/gm, ""],                      // Headers
+    [/^[-*+]\s+/gm, ""],                   // List items
+    [/^>\s+/gm, ""],                       // Blockquotes
+    [/^---+$/gm, ""],                      // Horizontal rules
+  ]
+
+  return replacements.reduce((result, [pattern, replacement]) => {
+    return result.replace(pattern, replacement)
+  }, text).trim()
 }
 
 export type NavigationRequest = "management" | "list" | "chat" | null
@@ -712,8 +734,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
               }))
             }
 
-            const aiNames: Record<string, string> = { gemini: "Gemini", claude: "Claude", local: "Local" }
-            const aiName = aiNames[command.targetAI] || command.targetAI
+            const aiName = AI_DISPLAY_NAMES[command.targetAI] || command.targetAI
             const messageId = addLocalResponse(categoryId, `Switched to ${aiName}.`, command.targetAI)
             playTTS(categoryId, `Switched to ${aiName}.`, messageId)
             return true
@@ -728,8 +749,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
             updatePendingMessage(categoryId, command.rawText)
             setAI(categoryId, command.targetAI)
 
-            const aiNames: Record<string, string> = { gemini: "Gemini", claude: "Claude", local: "Local" }
-            const aiName = aiNames[command.targetAI]
+            const aiName = AI_DISPLAY_NAMES[command.targetAI]
             const messageId = addLocalResponse(categoryId, `Escalated to ${aiName}.`, command.targetAI)
             playTTS(categoryId, `Moved to ${aiName}.`, messageId)
             return true
@@ -1185,12 +1205,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
           updatePendingMessage(categoryId, text)
           startThinkingBeat()
 
-          // Check if this is an action request - route to planning instead of chat
-          const actionWords = ["create", "make", "write", "fix", "run", "delete", "update", "add", "remove", "install", "build", "edit", "change", "modify"]
-          const lowerText = text.toLowerCase()
-          const isActionRequest = actionWords.some((word) => lowerText.includes(word))
-
-          if (isActionRequest) {
+          if (isActionRequest(text)) {
             // Action request - go straight to planning/execution
             const messageId = addLocalResponse(categoryId, "Working on that...", "claude")
             playTTS(categoryId, "Working on that.", messageId)
@@ -1592,12 +1607,7 @@ export function useSharedVoice(): UseSharedVoiceReturn {
         text: trimmed,
       }))
     } else if (category?.activeAI === "claude") {
-      // Check if action request
-      const actionWords = ["create", "make", "write", "fix", "run", "delete", "update", "add", "remove", "install", "build", "edit", "change", "modify"]
-      const lowerText = trimmed.toLowerCase()
-      const isActionRequest = actionWords.some((word) => lowerText.includes(word))
-
-      if (isActionRequest) {
+      if (isActionRequest(trimmed)) {
         sendClaudePlanRequest(categoryId, trimmed)
       } else {
         const context = category.messages

@@ -147,14 +147,17 @@ def execute_web_search(query: str, max_results: int = 5) -> str:
         return f"Search failed: {str(e)}"
 
 
+def _resolve_path(path: str, work_dir: str = None) -> str:
+    """Resolve path relative to work_dir if provided, otherwise expand user."""
+    if work_dir and not os.path.isabs(path):
+        return os.path.join(work_dir, path)
+    return os.path.expanduser(path)
+
+
 def execute_read_file(path: str, max_lines: int = 100, work_dir: str = None) -> str:
     """Read the contents of a file."""
     try:
-        # Resolve path relative to work_dir if provided
-        if work_dir and not os.path.isabs(path):
-            full_path = os.path.join(work_dir, path)
-        else:
-            full_path = os.path.expanduser(path)
+        full_path = _resolve_path(path, work_dir)
 
         if not os.path.exists(full_path):
             return f"File not found: {path}"
@@ -174,11 +177,7 @@ def execute_read_file(path: str, max_lines: int = 100, work_dir: str = None) -> 
 def execute_write_file(path: str, content: str, work_dir: str = None) -> str:
     """Write content to a file."""
     try:
-        # Resolve path relative to work_dir if provided
-        if work_dir and not os.path.isabs(path):
-            full_path = os.path.join(work_dir, path)
-        else:
-            full_path = os.path.expanduser(path)
+        full_path = _resolve_path(path, work_dir)
 
         # Ensure parent directory exists
         parent = os.path.dirname(full_path)
@@ -195,11 +194,7 @@ def execute_write_file(path: str, content: str, work_dir: str = None) -> str:
 def execute_list_files(path: str = ".", show_hidden: bool = False, work_dir: str = None) -> str:
     """List files and directories in a path."""
     try:
-        # Resolve path relative to work_dir if provided
-        if work_dir and not os.path.isabs(path):
-            full_path = os.path.join(work_dir, path)
-        else:
-            full_path = os.path.expanduser(path)
+        full_path = _resolve_path(path, work_dir)
 
         if not os.path.exists(full_path):
             return f"Path not found: {path}"
@@ -275,35 +270,34 @@ class LocalProvider(AIProvider):
 
     def _execute_tool(self, tool_name: str, arguments: dict) -> str:
         """Execute a tool and return the result."""
-        if tool_name == "web_search":
-            query = arguments.get("query", "")
-            max_results = arguments.get("max_results", 5)
-            print(f"[Tool] Searching: {query}")
-            result = execute_web_search(query, max_results)
-            print(f"[Tool] Results: {result[:200]}...")
-            return result
-        elif tool_name == "read_file":
-            path = arguments.get("path", "")
-            max_lines = arguments.get("max_lines", 100)
-            print(f"[Tool] Reading file: {path}")
-            result = execute_read_file(path, max_lines, self.work_dir)
-            print(f"[Tool] Read {len(result)} chars")
-            return result
-        elif tool_name == "write_file":
-            path = arguments.get("path", "")
-            content = arguments.get("content", "")
-            print(f"[Tool] Writing file: {path}")
-            result = execute_write_file(path, content, self.work_dir)
-            print(f"[Tool] Write result: {result}")
-            return result
-        elif tool_name == "list_files":
-            path = arguments.get("path", ".")
-            show_hidden = arguments.get("show_hidden", False)
-            print(f"[Tool] Listing files: {path}")
-            result = execute_list_files(path, show_hidden, self.work_dir)
-            print(f"[Tool] Found items: {result[:200]}...")
-            return result
-        return f"Unknown tool: {tool_name}"
+        tool_handlers = {
+            "web_search": lambda args: (
+                f"[Tool] Searching: {args.get('query', '')}",
+                execute_web_search(args.get("query", ""), args.get("max_results", 5))
+            ),
+            "read_file": lambda args: (
+                f"[Tool] Reading file: {args.get('path', '')}",
+                execute_read_file(args.get("path", ""), args.get("max_lines", 100), self.work_dir)
+            ),
+            "write_file": lambda args: (
+                f"[Tool] Writing file: {args.get('path', '')}",
+                execute_write_file(args.get("path", ""), args.get("content", ""), self.work_dir)
+            ),
+            "list_files": lambda args: (
+                f"[Tool] Listing files: {args.get('path', '.')}",
+                execute_list_files(args.get("path", "."), args.get("show_hidden", False), self.work_dir)
+            ),
+        }
+
+        handler = tool_handlers.get(tool_name)
+        if not handler:
+            return f"Unknown tool: {tool_name}"
+
+        log_msg, result = handler(arguments)
+        print(log_msg)
+        preview = result[:200] + "..." if len(result) > 200 else result
+        print(f"[Tool] Result: {preview}")
+        return result
 
     def _parse_text_tool_calls(self, content: str) -> list:
         """Parse tool calls from text format like <function=name>{args}</function>."""

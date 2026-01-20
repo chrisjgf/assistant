@@ -145,6 +145,11 @@ def _save_session(session: Session) -> None:
         json.dump(_session_to_dict(session), f, indent=2)
 
 
+def _get_category_key(mode: Literal["todo", "brain"]) -> str:
+    """Get the session key for category storage based on mode."""
+    return "todoCategories" if mode == "todo" else "brainCategories"
+
+
 # === Session CRUD ===
 
 def create_session() -> Dict[str, Any]:
@@ -266,11 +271,8 @@ def delete_session(session_id: str) -> bool:
     if not session_path.exists():
         return False
 
-    try:
-        session_path.unlink()
-        return True
-    except IOError:
-        return False
+    session_path.unlink()
+    return True
 
 
 def list_sessions(limit: int = 50) -> List[Dict[str, Any]]:
@@ -372,26 +374,24 @@ def update_category(session_id: str, mode: Literal["todo", "brain"], category_id
     if session_data is None:
         return None
 
-    key = "todoCategories" if mode == "todo" else "brainCategories"
+    key = _get_category_key(mode)
     categories = session_data.get(key, [])
 
-    for i, cat in enumerate(categories):
-        if cat["id"] == category_id:
-            # Update allowed fields
-            if "name" in updates:
-                cat["name"] = updates["name"]
-            if "order" in updates:
-                cat["order"] = updates["order"]
-            if mode == "todo" and "activeAI" in updates:
-                cat["activeAI"] = updates["activeAI"]
-            if "directoryPath" in updates:
-                cat["directoryPath"] = updates["directoryPath"]
+    for cat in categories:
+        if cat["id"] != category_id:
+            continue
 
-            categories[i] = cat
-            session_data[key] = categories
-            session_data["updatedAt"] = datetime.utcnow().isoformat() + "Z"
-            _save_session(_dict_to_session(session_data))
-            return cat
+        allowed = {"name", "order", "directoryPath"}
+        if mode == "todo":
+            allowed.add("activeAI")
+
+        for field in allowed:
+            if field in updates:
+                cat[field] = updates[field]
+
+        session_data["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+        _save_session(_dict_to_session(session_data))
+        return cat
 
     return None
 
@@ -411,7 +411,7 @@ def delete_category(session_id: str, mode: Literal["todo", "brain"], category_id
     if session_data is None:
         return False
 
-    key = "todoCategories" if mode == "todo" else "brainCategories"
+    key = _get_category_key(mode)
     categories = session_data.get(key, [])
 
     for i, cat in enumerate(categories):
@@ -443,7 +443,7 @@ def reorder_categories(session_id: str, mode: Literal["todo", "brain"], category
     if session_data is None:
         return False
 
-    key = "todoCategories" if mode == "todo" else "brainCategories"
+    key = _get_category_key(mode)
     categories = session_data.get(key, [])
 
     # Create lookup

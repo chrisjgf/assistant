@@ -123,6 +123,16 @@ export function CategoryDetail({ onTaskAction, className = "" }: CategoryDetailP
     fetchSynopsis()
   }
 
+  function getSynopsisText(): string {
+    if (totalCount === 0) {
+      return "Add tasks to get started"
+    }
+    if (completedCount === totalCount) {
+      return "All tasks complete!"
+    }
+    return synopsis || 'Click "Get AI Suggestion" for recommendations'
+  }
+
   const handleDelete = async () => {
     if (window.confirm(`Are you sure you want to delete "${selectedCategory.name}"?`)) {
       await deleteCategory(selectedCategory.id)
@@ -187,15 +197,7 @@ export function CategoryDetail({ onTaskAction, className = "" }: CategoryDetailP
               )}
             </div>
             <div className="category-detail__synopsis-content">
-              {totalCount === 0 ? (
-                <span>Add tasks to get started</span>
-              ) : completedCount === totalCount ? (
-                <span>All tasks complete!</span>
-              ) : synopsis ? (
-                <span>{synopsis}</span>
-              ) : (
-                <span>Click "Get AI Suggestion" for recommendations</span>
-              )}
+              <span>{getSynopsisText()}</span>
             </div>
           </div>
 

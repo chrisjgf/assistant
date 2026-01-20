@@ -37,26 +37,25 @@ export function CategoryManagement({ onClose, onSelectCategory }: CategoryManage
     setEditDirectory((cat as TodoCategory).directoryPath || "")
   }, [])
 
-  const handleSaveEdit = useCallback(() => {
-    if (!editingId || !editName.trim()) return
-
-    const updates: Partial<TodoCategory | BrainCategory> = { name: editName.trim() }
-    updateCategory(editingId, updates)
-
-    if (activeMode === "todo" && editDirectory !== undefined) {
-      setDirectoryPath(editingId, editDirectory.trim() || null)
-    }
-
-    setEditingId(null)
-    setEditName("")
-    setEditDirectory("")
-  }, [editingId, editName, editDirectory, activeMode, updateCategory, setDirectoryPath])
-
-  const handleCancelEdit = useCallback(() => {
+  const clearEditState = useCallback(() => {
     setEditingId(null)
     setEditName("")
     setEditDirectory("")
   }, [])
+
+  const handleSaveEdit = useCallback(() => {
+    if (!editingId || !editName.trim()) return
+
+    updateCategory(editingId, { name: editName.trim() })
+
+    if (activeMode === "todo") {
+      setDirectoryPath(editingId, editDirectory.trim() || null)
+    }
+
+    clearEditState()
+  }, [editingId, editName, editDirectory, activeMode, updateCategory, setDirectoryPath, clearEditState])
+
+  const handleCancelEdit = clearEditState
 
   const handleDelete = useCallback(async (id: string) => {
     if (window.confirm("Are you sure you want to delete this category?")) {

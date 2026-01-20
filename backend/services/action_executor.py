@@ -29,18 +29,14 @@ class ActionResult:
             "action_type": self.action_type,
             "message": self.message,
         }
-        if self.category_id is not None:
-            result["category_id"] = self.category_id
-        if self.category_name is not None:
-            result["category_name"] = self.category_name
-        if self.directory_path is not None:
-            result["directory_path"] = self.directory_path
-        if self.navigate_to is not None:
-            result["navigate_to"] = self.navigate_to
-        if self.directory_matches is not None:
-            result["directory_matches"] = self.directory_matches
-        if self.error is not None:
-            result["error"] = self.error
+        optional_fields = [
+            "category_id", "category_name", "directory_path",
+            "navigate_to", "directory_matches", "error"
+        ]
+        for field in optional_fields:
+            value = getattr(self, field)
+            if value is not None:
+                result[field] = value
         return result
 
 

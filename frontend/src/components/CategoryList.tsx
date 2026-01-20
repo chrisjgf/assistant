@@ -44,13 +44,9 @@ function SortableCategoryItem({ category, isSelected, onSelect, onDelete }: Sort
 
   // Calculate task progress for Todo categories
   const isTodoCategory = "tasks" in category
-  let completedCount = 0
-  let totalCount = 0
-
-  if (isTodoCategory) {
-    totalCount = (category as TodoCategory).tasks.length
-    completedCount = (category as TodoCategory).tasks.filter((t) => t.completed).length
-  }
+  const tasks = isTodoCategory ? (category as TodoCategory).tasks : []
+  const totalCount = tasks.length
+  const completedCount = tasks.filter((t) => t.completed).length
 
   return (
     <div
@@ -125,13 +121,12 @@ export function CategoryList({ className = "" }: CategoryListProps) {
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
+    if (!over || active.id === over.id) return
 
-    if (over && active.id !== over.id) {
-      const oldIndex = categories.findIndex((cat) => cat.id === active.id)
-      const newIndex = categories.findIndex((cat) => cat.id === over.id)
-      const newOrder = arrayMove([...categories], oldIndex, newIndex)
-      reorderCategories(newOrder.map((c) => c.id))
-    }
+    const oldIndex = categories.findIndex((cat) => cat.id === active.id)
+    const newIndex = categories.findIndex((cat) => cat.id === over.id)
+    const newOrder = arrayMove(categories, oldIndex, newIndex)
+    reorderCategories(newOrder.map((c) => c.id))
   }
 
   const handleCreateCategory = async () => {

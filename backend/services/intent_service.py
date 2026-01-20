@@ -39,15 +39,9 @@ class DetectedIntent:
     confidence: float = 0.0
 
     def to_dict(self) -> dict:
-        return {
-            "action_type": self.action_type.value,
-            "category_name": self.category_name,
-            "directory_hint": self.directory_hint,
-            "parent_hint": self.parent_hint,
-            "navigate_after": self.navigate_after,
-            "raw_text": self.raw_text,
-            "confidence": self.confidence,
-        }
+        result = asdict(self)
+        result["action_type"] = self.action_type.value
+        return result
 
 
 INTENT_SYSTEM_PROMPT = f"""You are an intent classifier for a voice-controlled coding assistant app. Your job is to determine if the user wants to perform an app action or ask a question.

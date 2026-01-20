@@ -27,7 +27,7 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
 
-    <!-- Service Worker Registration -->
+    <!-- Service Worker Registration - disabled for dev with self-signed certs
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
@@ -37,5 +37,6 @@
         });
       }
     </script>
+    -->
   </body>
 </html>

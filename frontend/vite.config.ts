@@ -12,9 +12,7 @@ export default defineConfig({
       key: fs.readFileSync(path.resolve(__dirname, '../certs/key.pem')),
       cert: fs.readFileSync(path.resolve(__dirname, '../certs/cert.pem')),
     },
-    hmr: {
-      host: '192.168.0.152',
-    },
+    hmr: false, // Disabled due to self-signed cert issues over network
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp'
